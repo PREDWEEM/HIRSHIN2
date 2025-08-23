@@ -37,7 +37,7 @@ FORZAR_AJUSTABLE_DESDE_CODIGO = False   # True = ignora el slider y usa EMEAC_AJ
 
 # ====================== Config fija (no visible) ======================
 DEFAULT_API_URL  = "https://meteobahia.com.ar/scripts/forecast/for-bd.xml"  # NUNCA visible en la UI
-DEFAULT_HIST_URL = "https://raw.githubusercontent.com/GUILLE-bit/HIRSHIN/main/data/historico.xlsx"
+DEFAULT_HIST_URL = "https://raw.githubusercontent.com/PREDWEEM/HIRSHIN2/main/data/historico.xlsx"
 
 # ====================== Estado persistente ======================
 if "api_token" not in st.session_state:
