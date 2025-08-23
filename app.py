@@ -416,7 +416,7 @@ if not pred_vis.empty:
             fig2.add_hline(y=nivel, line_dash="dash", opacity=0.6, annotation_text=f"{nivel}%")
 
         fig2.update_layout(
-            xaxis_title="Fecha", yaxis_title="EMEAC (%)",
+            xaxis_title="Fecha", yaxis_title="EMEAC (%))",
             hovermode="x unified",
             legend_title="Referencias",
             yaxis=dict(range=[0, 100]),
@@ -473,22 +473,37 @@ if not pred_vis.empty:
     # --- Tabla (después de ambos gráficos) ---
     pred_vis["Día juliano"] = pd.to_datetime(pred_vis["Fecha"]).dt.dayofyear
 
-    tabla = pd.DataFrame({
+    # Emojis SOLO para visualización de "Nivel de EMERREL"
+    nivel_emoji = {"Bajo": "🟢", "Medio": "🟡", "Alto": "🔴"}
+    nivel_emoji_txt = pred_vis["Nivel de EMERREL"].map(lambda x: f"{nivel_emoji.get(x, '')} {x}")
+
+    # Tabla para mostrar (con emoji en 'Nivel de EMERREL')
+    tabla_display = pd.DataFrame({
         "Fecha": pred_vis["Fecha"],
         "Día juliano": pred_vis["Día juliano"].astype(int),
-        "Nivel de EMERREL": pred_vis["Nivel de EMERREL"],
+        "Nivel de EMERREL": nivel_emoji_txt,
         "EMEAC (%)": emeac_ajust
     })
-    st.subheader("Tabla de Resultados (rango 1-feb → 1-oct)")
-    st.dataframe(tabla, use_container_width=True)
 
-    # Descarga CSV de la tabla del rango
-    csv_rango = tabla.to_csv(index=False).encode("utf-8")
+    # Tabla para exportar CSV (solo texto limpio en 'Nivel de EMERREL')
+    tabla_csv = pd.DataFrame({
+        "Fecha": pred_vis["Fecha"],
+        "Día juliano": pred_vis["Día juliano"].astype(int),
+        "Nivel de EMERREL": pred_vis["Nivel de EMERREL"],  # texto: Bajo/Medio/Alto
+        "EMEAC (%)": emeac_ajust
+    })
+
+    st.subheader("Tabla de Resultados (rango 1-feb → 1-oct)")
+    st.dataframe(tabla_display, use_container_width=True)
+
+    # Descarga CSV (solo texto limpio)
+    csv_rango = tabla_csv.to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇️ Descargar tabla (rango) en CSV",
         data=csv_rango,
-        file_name=f"tabla_rango_{pd.Timestamp.now().date()}.csv",
+        file_name=f"tabla_rango_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
+
