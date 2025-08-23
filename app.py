@@ -1,3 +1,5 @@
+
+# app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -155,11 +157,3 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
-'''
-
-# Guardar el archivo en disco
-full_file_path = "/mnt/data/app.py"
-with open(full_file_path, "w", encoding="utf-8") as f:
-    f.write(full_app_py_code)
-
-full_file_path
