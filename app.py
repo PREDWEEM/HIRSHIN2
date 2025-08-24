@@ -191,18 +191,20 @@ if fuente == "API + Histórico":
     token = st.session_state["api_token"] or ""
     compat = bool(st.session_state["compat_headers"])
 
-    # 1) API
-    df_api = pd.DataFrame()
-    if api_url.strip():
-        try:
-            with st.spinner("Descargando API…"):
-                df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
-            if df_api.empty:
-                st.warning("API: sin filas.")
-        except Exception as e:
-            st.error(f"Error API: {e}")
-    else:
-        st.info("No se configuró la URL de la API.")
+    # API
+with st.spinner("Descargando pronóstico..."):
+    df_api = cargar_api(API_URL, token, usar_headers)
+
+# Limitar a los primeros 7 días
+df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
+df_api = df_api.sort_values("Fecha")
+dias_unicos = df_api["Fecha"].dt.normalize().unique()
+df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:7])]
+
+if df_api.empty:
+    st.error("No se pudieron obtener datos del pronóstico.")
+    st.stop()
+
 
     # 2) Histórico: SIEMPRE fijo desde DEFAULT_HIST_URL (sin UI)
     dfh_raw = read_hist_from_url(DEFAULT_HIST_URL)
