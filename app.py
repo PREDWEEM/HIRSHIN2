@@ -192,16 +192,16 @@ if fuente == "API + Histórico":
     compat = bool(st.session_state["compat_headers"])
 
     # API
-with st.spinner("Descargando pronóstico..."):
+    with st.spinner("Descargando pronóstico..."):
     df_api = cargar_api(API_URL, token, usar_headers)
 
-# Limitar a los primeros 7 días
-df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
-df_api = df_api.sort_values("Fecha")
-dias_unicos = df_api["Fecha"].dt.normalize().unique()
-df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:7])]
+    # Limitar a los primeros 7 días
+    df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
+    df_api = df_api.sort_values("Fecha")
+    dias_unicos = df_api["Fecha"].dt.normalize().unique()
+    df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:7])]
 
-if df_api.empty:
+    if df_api.empty:
     st.error("No se pudieron obtener datos del pronóstico.")
     st.stop()
 
