@@ -197,10 +197,13 @@ if fuente == "API + Histórico":
         try:
             with st.spinner("Descargando API…"):
                 df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
-            if df_api.empty:
-                st.warning("API: sin filas.")
-        except Exception as e:
-            st.error(f"Error API: {e}")
+            if not df_api.empty:
+    df_api["Fecha"] = pd.to_datetime(df_api["Fecha"], errors="coerce")
+    df_api = df_api.sort_values("Fecha")
+    dias_unicos = df_api["Fecha"].dt.normalize().unique()
+    if len(dias_unicos) > 7:
+        dias_7 = dias_unicos[:7]
+        df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_7)].copy()
     else:
         st.info("No se configuró la URL de la API.")
 
