@@ -195,11 +195,11 @@ if fuente == "API + Histórico":
     with st.spinner("Descargando pronóstico..."):
          df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
 
-    # Limitar a los primeros 7 días
+    # Limitar a los primeros 8 días
     df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
     df_api = df_api.sort_values("Fecha")
     dias_unicos = df_api["Fecha"].dt.normalize().unique()
-    df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:7])]
+    df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:8])]
 
     if df_api.empty:
        st.error("No se pudieron obtener datos del pronóstico.")
