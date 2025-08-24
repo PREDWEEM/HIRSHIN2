@@ -193,7 +193,7 @@ if fuente == "API + Histórico":
 
     # API
     with st.spinner("Descargando pronóstico..."):
-         df_api = cargar_api(API_URL, token, usar_headers)
+         df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
 
     # Limitar a los primeros 7 días
     df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
