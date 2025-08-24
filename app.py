@@ -193,7 +193,7 @@ if fuente == "API + Histórico":
 
     # API
     with st.spinner("Descargando pronóstico..."):
-    df_api = cargar_api(API_URL, token, usar_headers)
+         df_api = cargar_api(API_URL, token, usar_headers)
 
     # Limitar a los primeros 7 días
     df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
@@ -202,8 +202,8 @@ if fuente == "API + Histórico":
     df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:7])]
 
     if df_api.empty:
-    st.error("No se pudieron obtener datos del pronóstico.")
-    st.stop()
+       st.error("No se pudieron obtener datos del pronóstico.")
+       st.stop()
 
 
     # 2) Histórico: SIEMPRE fijo desde DEFAULT_HIST_URL (sin UI)
