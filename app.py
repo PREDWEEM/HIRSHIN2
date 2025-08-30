@@ -121,7 +121,7 @@ fuente = st.sidebar.radio(
 # "Usar umbral ajustable desde CÓDIGO",
 #    value=FORZAR_AJUSTABLE_DESDE_CODIGO,
 #   key="chk_usar_codigo"
-)
+# )
 
 umbral_slider = st.sidebar.slider(
     "Seleccione el umbral EMEAC (Ajustable)",
