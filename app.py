@@ -177,9 +177,15 @@ source_label = None
 
 if fuente == "API + Histórico":
     # Pronóstico (API XML) — URL NUNCA visible
-    st.sidebar.subheader("Pronóstico (API XML)")
     api_url = DEFAULT_API_URL  # fija y oculta (solo en código)
-    st.sidebar.text_input("Bearer token (opcional)", key="api_token", type="password")
+
+    # (Sin subheader) Campo de token con label oculto
+    st.sidebar.text_input(
+        label=" ",
+        key="api_token",
+        type="password",
+        label_visibility="collapsed"
+    )
     st.session_state["compat_headers"] = st.sidebar.checkbox(
         "Compatibilidad (headers de navegador)", value=st.session_state["compat_headers"]
     )
@@ -204,7 +210,6 @@ if fuente == "API + Histórico":
     if df_api.empty:
        st.error("No se pudieron obtener datos del pronóstico.")
        st.stop()
-
 
     # 2) Histórico: SIEMPRE fijo desde DEFAULT_HIST_URL (sin UI)
     dfh_raw = read_hist_from_url(DEFAULT_HIST_URL)
@@ -418,7 +423,7 @@ if not pred_vis.empty:
             fig2.add_hline(y=nivel, line_dash="dash", opacity=0.6, annotation_text=f"{nivel}%")
 
         fig2.update_layout(
-            xaxis_title="Fecha", yaxis_title="EMEAC (%))",
+            xaxis_title="Fecha", yaxis_title="EMEAC (%)",
             hovermode="x unified",
             legend_title="Referencias",
             yaxis=dict(range=[0, 100]),
