@@ -54,12 +54,13 @@ fuente = st.sidebar.radio(
     options=["API + Histórico", "Subir Excel"],
     index=0,
 )
-
-# Umbral ajustable: UI y/o código
 usar_codigo = st.sidebar.checkbox(
-    "Usar umbral ajustable desde CÓDIGO",
-    value=FORZAR_AJUSTABLE_DESDE_CODIGO
+    label=" ",
+    value=FORZAR_AJUSTABLE_DESDE_CODIGO,
+    key="chk_usar_codigo",
+    label_visibility="collapsed"
 )
+
 
 umbral_slider = st.sidebar.slider(
     "Seleccione el umbral EMEAC (Ajustable)",
