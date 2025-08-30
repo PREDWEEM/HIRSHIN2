@@ -117,10 +117,10 @@ fuente = st.sidebar.radio(
 )
 
 # Umbral ajustable: UI y/o código
-usar_codigo = st.sidebar.checkbox(
- # "Usar umbral ajustable desde CÓDIGO",
-    value=FORZAR_AJUSTABLE_DESDE_CODIGO,
-    key="chk_usar_codigo"
+# usar_codigo = st.sidebar.checkbox(
+# "Usar umbral ajustable desde CÓDIGO",
+#    value=FORZAR_AJUSTABLE_DESDE_CODIGO,
+#   key="chk_usar_codigo"
 )
 
 umbral_slider = st.sidebar.slider(
