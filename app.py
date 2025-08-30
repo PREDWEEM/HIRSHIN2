@@ -118,7 +118,7 @@ fuente = st.sidebar.radio(
 
 # Umbral ajustable: UI y/o código
 usar_codigo = st.sidebar.checkbox(
-    "Usar umbral ajustable desde CÓDIGO",
+ # "Usar umbral ajustable desde CÓDIGO",
     value=FORZAR_AJUSTABLE_DESDE_CODIGO,
     key="chk_usar_codigo"
 )
@@ -138,7 +138,7 @@ umbral_usuario = int(np.clip(
 ))
 
 # Botón global de recarga
-sidebar_refresh_button()
+# sidebar_refresh_button()
 
 # ============== Helpers =================
 @st.cache_data(ttl=600, show_spinner=False)
