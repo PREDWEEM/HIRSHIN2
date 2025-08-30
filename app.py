@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 import io
 import requests
+import time
 
 from modelo_emerrel import ejecutar_modelo
 from meteobahia import (
@@ -27,11 +28,8 @@ st.set_page_config(page_title="PREDICCION EMERGENCIA AGRICOLA HIRSHIN", layout="
 # ====================== UMBRALES EMEAC (EDITABLES EN CÓDIGO) ======================
 EMEAC_MIN = 5     # Umbral mínimo por defecto (cambia aquí)
 EMEAC_MAX = 7     # Umbral máximo por defecto (cambia aquí)
-
-# Asegurar orden correcto por si alguien los invierte por error
 EMEAC_MIN, EMEAC_MAX = sorted([EMEAC_MIN, EMEAC_MAX])
 
-# Umbral AJUSTABLE por defecto (editable en CÓDIGO) y opción de forzarlo
 EMEAC_AJUSTABLE_DEF = 6                 # Debe estar entre EMEAC_MIN y EMEAC_MAX
 FORZAR_AJUSTABLE_DESDE_CODIGO = False   # True = ignora el slider y usa EMEAC_AJUSTABLE_DEF
 
@@ -47,25 +45,90 @@ if "reload_nonce" not in st.session_state:
 if "compat_headers" not in st.session_state:
     st.session_state["compat_headers"] = True
 
+# ====================== Utilidades de estabilidad / UX ======================
+def _get_query_params():
+    try:
+        qp = st.query_params
+        if isinstance(qp, dict):
+            return {k: [v] if isinstance(v, str) else v for k, v in qp.items()}
+        return dict(qp)
+    except Exception:
+        try:
+            return st.experimental_get_query_params()
+        except Exception:
+            return {}
+
+def is_embedded() -> bool:
+    qp = _get_query_params()
+    val = str(qp.get("embed", [""])[0]).lower()
+    return val in {"1", "true", "yes"}
+
+def setup_embed_tools(base_url: str | None = None):
+    if is_embedded():
+        st.info("App embebida: si no arranca, abrila completa o reintentá la carga.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if base_url:
+                st.link_button("🔗 Abrir app completa", base_url)
+        with c2:
+            if st.button("🔁 Reintentar (limpiar caché y recargar)", key="btn_retry_embed"):
+                try:
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                except Exception:
+                    pass
+                st.rerun()
+
+def clear_and_rerun():
+    try:
+        st.cache_data.clear()
+        st.cache_resource.clear()
+    except Exception:
+        pass
+    st.rerun()
+
+def sidebar_refresh_button(label: str = "🔄 Refrescar datos"):
+    with st.sidebar:
+        if st.button(label, key="btn_refresh_sidebar"):
+            clear_and_rerun()
+
+def with_retries(fn, retries: int = 2, delay: float = 0.8):
+    def _wrapped(*args, **kwargs):
+        last_err = None
+        for i in range(retries + 1):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                last_err = e
+                if i < retries:
+                    time.sleep(delay)
+        raise last_err
+    return _wrapped
+
+setup_embed_tools(base_url=None)  # poné tu URL pública si querés el botón "Abrir app completa"
+
 # ================= Sidebar =================
 st.sidebar.header("Fuente de datos")
 fuente = st.sidebar.radio(
     "Elegí cómo cargar datos",
     options=["API + Histórico", "Subir Excel"],
     index=0,
+    key="radio_fuente"
 )
 
 # Umbral ajustable: UI y/o código
 usar_codigo = st.sidebar.checkbox(
     "Usar umbral ajustable desde CÓDIGO",
-    value=FORZAR_AJUSTABLE_DESDE_CODIGO
+    value=FORZAR_AJUSTABLE_DESDE_CODIGO,
+    key="chk_usar_codigo"
 )
 
 umbral_slider = st.sidebar.slider(
     "Seleccione el umbral EMEAC (Ajustable)",
     min_value=int(EMEAC_MIN),
     max_value=int(EMEAC_MAX),
-    value=int(np.clip(EMEAC_AJUSTABLE_DEF, EMEAC_MIN, EMEAC_MAX))  # arranca en el valor de código
+    value=int(np.clip(EMEAC_AJUSTABLE_DEF, EMEAC_MIN, EMEAC_MAX)),
+    key="sld_umbral"
 )
 
 # Umbral efectivo que usa la app
@@ -74,11 +137,30 @@ umbral_usuario = int(np.clip(
     EMEAC_MIN, EMEAC_MAX
 ))
 
+# Botón global de recarga
+sidebar_refresh_button()
+
 # ============== Helpers =================
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_api_cached(url: str, token: str | None, nonce: int, use_browser_headers: bool):
-    # 'nonce' invalida la caché
-    return fetch_meteobahia_api_xml(url.strip(), token=token or None, use_browser_headers=use_browser_headers)
+    """Llamada cacheada (nonce invalida la caché)."""
+    fn = with_retries(
+        lambda: fetch_meteobahia_api_xml(url.strip(), token=token or None, use_browser_headers=use_browser_headers),
+        retries=2, delay=0.8
+    )
+    return fn()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def read_hist_from_url(url: str) -> pd.DataFrame:
+    if not url.strip():
+        return pd.DataFrame()
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url.strip(), headers=headers, timeout=25)
+    r.raise_for_status()
+    buf = io.BytesIO(r.content)
+    if url.lower().endswith(".csv"):
+        return pd.read_csv(buf)
+    return pd.read_excel(buf)
 
 def normalize_hist(df_hist: pd.DataFrame, api_year: int) -> pd.DataFrame:
     """Normaliza histórico: acepta Fecha o solo Julian_days. Valida 1–365/366 y nombres variados."""
@@ -154,20 +236,14 @@ def normalize_hist(df_hist: pd.DataFrame, api_year: int) -> pd.DataFrame:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df[["Fecha", "Julian_days", "TMAX", "TMIN", "Prec"]]
 
-def read_hist_from_url(url: str) -> pd.DataFrame:
-    if not url.strip():
-        return pd.DataFrame()
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url.strip(), headers=headers, timeout=25)
-        r.raise_for_status()
-        buf = io.BytesIO(r.content)
-        if url.lower().endswith(".csv"):
-            return pd.read_csv(buf)
-        return pd.read_excel(buf)
-    except Exception as e:
-        st.error(f"No pude descargar el histórico desde la URL: {e}")
-        return pd.DataFrame()
+# ================= Pesos del modelo (cacheados) =================
+@st.cache_resource
+def load_model_weights():
+    IW = np.load("IW.npy")
+    bias_IW = np.load("bias_IW.npy")
+    LW = np.load("LW.npy")
+    bias_out = np.load("bias_out.npy")
+    return IW, bias_IW, LW, bias_out
 
 # ================= Flujo principal =================
 st.title("PREDICCION EMERGENCIA AGRICOLA HIRSHIN")
@@ -181,11 +257,11 @@ if fuente == "API + Histórico":
     api_url = DEFAULT_API_URL  # fija y oculta (solo en código)
     st.sidebar.text_input("Bearer token (opcional)", key="api_token", type="password")
     st.session_state["compat_headers"] = st.sidebar.checkbox(
-        "Compatibilidad (headers de navegador)", value=st.session_state["compat_headers"]
+        "Compatibilidad (headers de navegador)", value=st.session_state["compat_headers"], key="chk_headers"
     )
 
     # Control de recarga
-    if st.sidebar.button("Actualizar ahora (forzar recarga)"):
+    if st.sidebar.button("Actualizar ahora (forzar recarga)", key="btn_reload_now"):
         st.session_state["reload_nonce"] += 1
 
     token = st.session_state["api_token"] or ""
@@ -193,65 +269,68 @@ if fuente == "API + Histórico":
 
     # API
     with st.spinner("Descargando pronóstico..."):
-         df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
+        try:
+            df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
+        except Exception as e:
+            st.error(f"No se pudieron obtener datos del pronóstico: {e}")
+            st.stop()
 
     # Limitar a los primeros 8 días
-    df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
-    df_api = df_api.sort_values("Fecha")
+    df_api["Fecha"] = pd.to_datetime(df_api["Fecha"], errors="coerce")
+    df_api = df_api.dropna(subset=["Fecha"]).sort_values("Fecha")
     dias_unicos = df_api["Fecha"].dt.normalize().unique()
     df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:8])]
 
     if df_api.empty:
-       st.error("No se pudieron obtener datos del pronóstico.")
-       st.stop()
-
+        st.error("No se pudieron obtener datos del pronóstico.")
+        st.stop()
 
     # 2) Histórico: SIEMPRE fijo desde DEFAULT_HIST_URL (sin UI)
-    dfh_raw = read_hist_from_url(DEFAULT_HIST_URL)
+    with st.spinner("Descargando histórico..."):
+        try:
+            dfh_raw = read_hist_from_url(DEFAULT_HIST_URL)
+        except Exception as e:
+            st.error(f"No pude descargar el histórico: {e}")
+            dfh_raw = pd.DataFrame()
 
     # 3) Fusión
-    if not df_api.empty:
-        min_api_date = pd.to_datetime(df_api["Fecha"].min()).normalize()
-        api_year = int(min_api_date.year)
-        start_hist = pd.Timestamp(api_year, 1, 1)
-        end_hist = min_api_date - pd.Timedelta(days=1)
+    min_api_date = pd.to_datetime(df_api["Fecha"].min()).normalize()
+    api_year = int(min_api_date.year)
+    start_hist = pd.Timestamp(api_year, 1, 1)
+    end_hist = min_api_date - pd.Timedelta(days=1)
 
-        df_hist_trim = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
-        if not dfh_raw.empty and end_hist >= start_hist:
-            try:
-                df_hist_all = normalize_hist(dfh_raw, api_year=api_year)
-                if not df_hist_all.empty:
-                    m = (df_hist_all["Fecha"] >= start_hist) & (df_hist_all["Fecha"] <= end_hist)
-                    df_hist_trim = df_hist_all.loc[m].copy()
-                    if df_hist_trim.empty:
-                        st.warning(
-                            f"El histórico no aporta filas entre {start_hist.date()} y {end_hist.date()}."
-                        )
-                else:
-                    st.warning("Histórico sin filas tras normalizar.")
-            except Exception as e:
-                st.error(f"Error normalizando histórico: {e}")
+    df_hist_trim = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
+    if not dfh_raw.empty and end_hist >= start_hist:
+        try:
+            df_hist_all = normalize_hist(dfh_raw, api_year=api_year)
+            if not df_hist_all.empty:
+                m = (df_hist_all["Fecha"] >= start_hist) & (df_hist_all["Fecha"] <= end_hist)
+                df_hist_trim = df_hist_all.loc[m].copy()
+                if df_hist_trim.empty:
+                    st.caption(f"Histórico sin filas entre {start_hist.date()} y {end_hist.date()}.")
+            else:
+                st.caption("Histórico sin filas tras normalizar.")
+        except Exception as e:
+            st.error(f"Error normalizando histórico: {e}")
 
-        df_all = pd.concat([df_hist_trim, df_api], ignore_index=True)
-        df_all["Fecha"] = pd.to_datetime(df_all["Fecha"], errors="coerce")
-        df_all = df_all.dropna(subset=["Fecha"]).sort_values("Fecha")
-        df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
-        df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
+    df_all = pd.concat([df_hist_trim, df_api], ignore_index=True)
+    df_all["Fecha"] = pd.to_datetime(df_all["Fecha"], errors="coerce")
+    df_all = df_all.dropna(subset=["Fecha"]).sort_values("Fecha")
+    df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
+    df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
 
-        if df_all.empty:
-            st.error("Fusión vacía (ni histórico válido ni API).")
-            st.stop()
+    if df_all.empty:
+        st.error("Fusión vacía (ni histórico válido ni API).")
+        st.stop()
 
-        input_df_raw = df_all.copy()
-        src = ["API"]
-        if not df_hist_trim.empty:
-            src.append(f"Hist ({df_hist_trim['Fecha'].min().date()} → {df_hist_trim['Fecha'].max().date()})")
-        source_label = " + ".join(src)
-    else:
-        st.warning("Sin datos de API. Verificá la configuración del endpoint en el código.")
+    input_df_raw = df_all.copy()
+    src = ["API"]
+    if not df_hist_trim.empty:
+        src.append(f"Hist ({df_hist_trim['Fecha'].min().date()} → {df_hist_trim['Fecha'].max().date()})")
+    source_label = " + ".join(src)
 
 elif fuente == "Subir Excel":
-    uploaded_file = st.file_uploader("Cargar archivo input.xlsx", type=["xlsx"])
+    uploaded_file = st.file_uploader("Cargar archivo input.xlsx", type=["xlsx"], key="upl_excel_input")
     if uploaded_file is not None:
         try:
             input_df_raw = pd.read_excel(uploaded_file)
@@ -271,10 +350,7 @@ if input_df is None or input_df.empty:
 
 # ================= Pesos del modelo =================
 try:
-    IW = np.load("IW.npy")
-    bias_IW = np.load("bias_IW.npy")
-    LW = np.load("LW.npy")
-    bias_out = np.load("bias_out.npy")
+    IW, bias_IW, LW, bias_out = load_model_weights()  # ✅ cache_resource: solo 1 vez por proceso
 except Exception as e:
     st.error(f"No pude cargar los pesos del modelo (.npy): {e}")
     st.stop()
@@ -339,7 +415,7 @@ if not pred_vis.empty:
             mode="lines", name="Media móvil 5 días",
             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>MA5: %{y:.3f}<extra></extra>"
         ))
-        # Área celeste claro bajo MA5
+        # Área debajo de MA5
         fig1.add_trace(go.Scatter(
             x=pred_vis["Fecha"], y=pred_vis["EMERREL_MA5_rango"],
             mode="lines", line=dict(width=0),
@@ -360,7 +436,7 @@ if not pred_vis.empty:
             mode="lines", line=dict(color="orange", dash="dot"),
             name=f"Nivel Medio (≤ {y_med:.2f})", hoverinfo="skip"
         ))
-        # Entrada de leyenda para Alto (sin línea fija)
+        # Entrada de leyenda para Alto
         fig1.add_trace(go.Scatter(
             x=[None], y=[None], mode="lines",
             line=dict(color="red", dash="dot"),
@@ -373,7 +449,7 @@ if not pred_vis.empty:
             legend_title="Referencias",
             height=650
         )
-        st.plotly_chart(fig1, use_container_width=True, theme="streamlit")
+        st.plotly_chart(fig1, use_container_width=True)
 
         # ---------- Gráfico 2: EMEAC ----------
         st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE")
@@ -418,43 +494,26 @@ if not pred_vis.empty:
             fig2.add_hline(y=nivel, line_dash="dash", opacity=0.6, annotation_text=f"{nivel}%")
 
         fig2.update_layout(
-            xaxis_title="Fecha", yaxis_title="EMEAC (%))",
+            xaxis_title="Fecha", yaxis_title="EMEAC (%)",
             hovermode="x unified",
             legend_title="Referencias",
             yaxis=dict(range=[0, 100]),
             height=600
         )
-        st.plotly_chart(fig2, use_container_width=True, theme="streamlit")
+        st.plotly_chart(fig2, use_container_width=True)
 
     else:
         # === Fallback Matplotlib ===
-        # --- Gráfico 1: EMERREL (barras + MA5) ---
         color_map = {"Bajo": "green", "Medio": "yellow", "Alto": "red"}
+        # --- Gráfico 1: EMERREL (barras + MA5) ---
         fig1, ax1 = plt.subplots(figsize=(12, 4))
-
-        # Área celeste claro bajo MA5
-        ax1.fill_between(
-            pred_vis["Fecha"], 0, pred_vis["EMERREL_MA5_rango"],
-            color="skyblue", alpha=0.3, zorder=0
-        )
-        # Barras
-        ax1.bar(
-            pred_vis["Fecha"], pred_vis["EMERREL (0-1)"],
-            color=pred_vis["Nivel de EMERREL"].map(color_map)
-        )
-        # Línea MA5
-        line_ma5 = ax1.plot(
-            pred_vis["Fecha"], pred_vis["EMERREL_MA5_rango"],
-            linewidth=2.2, label="Media móvil 5 días"
-        )[0]
-
+        ax1.fill_between(pred_vis["Fecha"], 0, pred_vis["EMERREL_MA5_rango"], color="skyblue", alpha=0.3, zorder=0)
+        ax1.bar(pred_vis["Fecha"], pred_vis["EMERREL (0-1)"], color=pred_vis["Nivel de EMERREL"].map(color_map))
+        line_ma5 = ax1.plot(pred_vis["Fecha"], pred_vis["EMERREL_MA5_rango"], linewidth=2.2, label="Media móvil 5 días")[0]
         ax1.set_ylabel("EMERREL (0-1)")
         ax1.set_title("EMERGENCIA RELATIVA DIARIA")
         ax1.tick_params(axis='x', rotation=45)
-        ax1.legend(
-            handles=[Patch(facecolor=color_map[k], label=k) for k in ["Bajo","Medio","Alto"]] + [line_ma5],
-            loc="upper right"
-        )
+        ax1.legend(handles=[Patch(facecolor=color_map[k], label=k) for k in ["Bajo","Medio","Alto"]] + [line_ma5], loc="upper right")
         ax1.grid(True)
         st.pyplot(fig1); plt.close(fig1)
 
@@ -475,11 +534,9 @@ if not pred_vis.empty:
     # --- Tabla (después de ambos gráficos) ---
     pred_vis["Día juliano"] = pd.to_datetime(pred_vis["Fecha"]).dt.dayofyear
 
-    # Emojis SOLO para visualización de "Nivel de EMERREL"
     nivel_emoji = {"Bajo": "🟢", "Medio": "🟡", "Alto": "🔴"}
     nivel_emoji_txt = pred_vis["Nivel de EMERREL"].map(lambda x: f"{nivel_emoji.get(x, '')} {x}")
 
-    # Tabla para mostrar (con emoji en 'Nivel de EMERREL')
     tabla_display = pd.DataFrame({
         "Fecha": pred_vis["Fecha"],
         "Día juliano": pred_vis["Día juliano"].astype(int),
@@ -487,25 +544,23 @@ if not pred_vis.empty:
         "EMEAC (%)": emeac_ajust
     })
 
-    # Tabla para exportar CSV (solo texto limpio en 'Nivel de EMERREL')
     tabla_csv = pd.DataFrame({
         "Fecha": pred_vis["Fecha"],
         "Día juliano": pred_vis["Día juliano"].astype(int),
-        "Nivel de EMERREL": pred_vis["Nivel de EMERREL"],  # texto: Bajo/Medio/Alto
+        "Nivel de EMERREL": pred_vis["Nivel de EMERREL"],
         "EMEAC (%)": emeac_ajust
     })
 
     st.subheader("Tabla de Resultados (rango 1-feb → 1-oct)")
     st.dataframe(tabla_display, use_container_width=True)
 
-    # Descarga CSV (solo texto limpio)
     csv_rango = tabla_csv.to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇️ Descargar tabla (rango) en CSV",
         data=csv_rango,
         file_name=f"tabla_rango_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
         mime="text/csv",
+        key="btn_dl_csv_rango"
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
-
