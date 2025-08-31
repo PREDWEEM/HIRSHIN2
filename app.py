@@ -22,7 +22,16 @@ try:
 except Exception:
     PLOTLY_OK = False
 
-st.set_page_config(page_title="PREDICCION EMERGENCIA AGRICOLA HIRSHIN", layout="wide")
+# ========= Page config (oculta enlaces de menú) =========
+st.set_page_config(
+    page_title="PREDICCION EMERGENCIA AGRICOLA HIRSHIN",
+    layout="wide",
+    menu_items={
+        "Get help": None,
+        "Report a bug": None,
+        "About": None,
+    },
+)
 
 # ====================== UMBRALES EMEAC (EDITABLES EN CÓDIGO) ======================
 EMEAC_MIN = 5     # Umbral mínimo por defecto (cambia aquí)
@@ -55,18 +64,18 @@ fuente = st.sidebar.radio(
     index=0,
 )
 usar_codigo = st.sidebar.checkbox(
-    label=" ",
+    label=" ",  # colapsa el label para no mostrar texto
     value=FORZAR_AJUSTABLE_DESDE_CODIGO,
     key="chk_usar_codigo",
-    label_visibility="collapsed"
+    label_visibility="collapsed",
+    help="Si está tildado, el umbral ajustable usa el valor fijado en el código (EMEAC_AJUSTABLE_DEF).",
 )
-
 
 umbral_slider = st.sidebar.slider(
     "Seleccione el umbral EMEAC (Ajustable)",
     min_value=int(EMEAC_MIN),
     max_value=int(EMEAC_MAX),
-    value=int(np.clip(EMEAC_AJUSTABLE_DEF, EMEAC_MIN, EMEAC_MAX))  # arranca en el valor de código
+    value=int(np.clip(EMEAC_AJUSTABLE_DEF, EMEAC_MIN, EMEAC_MAX)),  # arranca en el valor de código
 )
 
 # Umbral efectivo que usa la app
@@ -78,8 +87,39 @@ umbral_usuario = int(np.clip(
 # ============== Helpers =================
 @st.cache_data(ttl=600)
 def fetch_api_cached(url: str, token: str | None, nonce: int, use_browser_headers: bool):
-    # 'nonce' invalida la caché
-    return fetch_meteobahia_api_xml(url.strip(), token=token or None, use_browser_headers=use_browser_headers)
+    """
+    Wrapper con caché para la API. 'nonce' invalida la caché cuando se aprieta 'Actualizar'.
+    Retorna DataFrame con columnas esperadas o levanta excepción.
+    """
+    df = fetch_meteobahia_api_xml(url.strip(), token=token or None, use_browser_headers=use_browser_headers)
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise RuntimeError("La API no devolvió una tabla válida.")
+    # Validar y normalizar columnas mínimas
+    cols_lower = {c.lower(): c for c in df.columns}
+    # Mapear nombres típicos
+    mapeo = {}
+    for cands, tgt in [
+        (["fecha", "date", "time"], "Fecha"),
+        (["tmax", "tx", "tempmax"], "TMAX"),
+        (["tmin", "tn", "tempmin"], "TMIN"),
+        (["prec", "ppt", "rain", "lluvia", "mm"], "Prec"),
+    ]:
+        for c in cands:
+            if c in cols_lower:
+                mapeo[cols_lower[c]] = tgt
+                break
+    df = df.rename(columns=mapeo)
+    if "Fecha" not in df.columns:
+        raise RuntimeError("La respuesta de la API no contiene columna de fecha reconocible.")
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+    df = df.dropna(subset=["Fecha"])
+    # Asegurar numéricos (si existen)
+    for c in ["TMAX", "TMIN", "Prec"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Restringir a columnas relevantes si existen
+    keep = [c for c in ["Fecha", "TMAX", "TMIN", "Prec"] if c in df.columns]
+    return df[keep].sort_values("Fecha").reset_index(drop=True)
 
 def normalize_hist(df_hist: pd.DataFrame, api_year: int) -> pd.DataFrame:
     """Normaliza histórico: acepta Fecha o solo Julian_days. Valida 1–365/366 y nombres variados."""
@@ -95,7 +135,7 @@ def normalize_hist(df_hist: pd.DataFrame, api_year: int) -> pd.DataFrame:
     ren = {}
     for cands, tgt in [
         (["fecha", "date", "fechas"], "Fecha"),
-        (["julian_days", "julianday", "julian", "dia_juliano"], "Julian_days"),
+        (["julian_days", "julianday", "julian", "dia_juliano", "diajuliano"], "Julian_days"),
         (["tmax", "t_max", "t max", "tx", "tmax(°c)"], "TMAX"),
         (["tmin", "t_min", "t min", "tn", "tmin(°c)"], "TMIN"),
         (["prec", "ppt", "precip", "lluvia", "mm", "prcp"], "Prec"),
@@ -180,12 +220,13 @@ if fuente == "API + Histórico":
     # Pronóstico (API XML) — URL NUNCA visible
     api_url = DEFAULT_API_URL  # fija y oculta (solo en código)
 
-    # (Sin subheader) Campo de token con label oculto
+    # Campo de token oculto (label colapsado)
     st.sidebar.text_input(
         label=" ",
         key="api_token",
         type="password",
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        help="Si tu endpoint requiere token, ingresalo aquí.",
     )
     st.session_state["compat_headers"] = st.sidebar.checkbox(
         "Compatibilidad (headers de navegador)", value=st.session_state["compat_headers"]
@@ -199,18 +240,23 @@ if fuente == "API + Histórico":
     compat = bool(st.session_state["compat_headers"])
 
     # API
-    with st.spinner("Descargando pronóstico..."):
-         df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
+    try:
+        with st.spinner("Descargando pronóstico..."):
+            df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
+    except Exception as e:
+        st.error(f"No se pudo cargar el pronóstico: {e}")
+        df_api = pd.DataFrame()
 
-    # Limitar a los primeros 8 días
-    df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
-    df_api = df_api.sort_values("Fecha")
-    dias_unicos = df_api["Fecha"].dt.normalize().unique()
-    df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:8])]
+    # Limitar a los primeros 8 días (si hay datos)
+    if not df_api.empty:
+        df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
+        df_api = df_api.sort_values("Fecha")
+        dias_unicos = df_api["Fecha"].dt.normalize().unique()
+        df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:8])]
 
     if df_api.empty:
-       st.error("No se pudieron obtener datos del pronóstico.")
-       st.stop()
+        st.error("No se pudieron obtener datos del pronóstico.")
+        st.stop()
 
     # 2) Histórico: SIEMPRE fijo desde DEFAULT_HIST_URL (sin UI)
     dfh_raw = read_hist_from_url(DEFAULT_HIST_URL)
@@ -222,7 +268,7 @@ if fuente == "API + Histórico":
         start_hist = pd.Timestamp(api_year, 1, 1)
         end_hist = min_api_date - pd.Timedelta(days=1)
 
-        df_hist_trim = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
+        df_hist_trim = pd.DataFrame(columns=["Fecha", "Julian_days", "TMAX", "TMIN", "Prec"])
         if not dfh_raw.empty and end_hist >= start_hist:
             try:
                 df_hist_all = normalize_hist(dfh_raw, api_year=api_year)
@@ -286,7 +332,11 @@ except Exception as e:
     st.stop()
 
 # ================= Ejecutar modelo (intacto) =================
-resultado = ejecutar_modelo(input_df, IW, bias_IW, LW, bias_out, umbral_usuario)
+try:
+    resultado = ejecutar_modelo(input_df, IW, bias_IW, LW, bias_out, umbral_usuario)
+except TypeError as e:
+    st.error(f"No se pudo ejecutar el modelo. Detalle: {e}")
+    st.stop()
 
 # Reemplazar Fecha por la del input original si está completa
 fechas_excel = usar_fechas_de_input(input_df_raw, len(resultado))
@@ -297,7 +347,8 @@ if fechas_excel is not None:
 pred_vis = reiniciar_feb_oct(resultado[["Fecha", "EMERREL (0-1)"]].copy(), umbral_ajustable=umbral_usuario)
 
 # Sello y fuente (sin exponer URL)
-st.caption(f"Fuente de datos: {source_label}")
+if source_label:
+    st.caption(f"Fuente de datos: {source_label}")
 st.caption(f"Última actualización: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.caption(f"Umbral EMEAC usado: {umbral_usuario}" + (" (forzado desde código)" if usar_codigo else ""))
 
@@ -307,11 +358,7 @@ if not pred_vis.empty:
     pred_vis = pred_vis.copy()
     pred_vis["EMERREL_MA5_rango"] = pred_vis["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
 
-    # Clasificación 0.2 / 0.4
-    def clasif(v): return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
-    pred_vis["Nivel de EMERREL"] = pred_vis["EMERREL (0-1)"].apply(clasif)
-
-    # ---------- SERIES EMEAC corregidas ----------
+    # ---------- SERIES EMEAC ----------
     emerrel_rango = pred_vis["EMERREL (0-1)"].to_numpy()
     cumsum_rango = np.cumsum(emerrel_rango)
 
@@ -321,6 +368,14 @@ if not pred_vis.empty:
     emeac_max_pct = np.clip(cumsum_rango / float(EMEAC_MIN) * 100.0, 0, 100)
     # % para el umbral ajustable
     emeac_ajust   = np.clip(cumsum_rango / float(umbral_usuario) * 100.0, 0, 100)
+
+    # --- Clasificación por niveles (0.2 / 0.4) ---
+    def clasif(v):
+        return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
+    pred_vis["Nivel de EMERREL"] = pred_vis["EMERREL (0-1)"].apply(clasif)
+
+    # (OPCIONAL) Si quisieras forzar "Bajo" cuando EMEAC < 10%:
+    # pred_vis.loc[emeac_ajust < 10, "Nivel de EMERREL"] = "Bajo"
 
     # === Plot con Plotly si está disponible ===
     if PLOTLY_OK:
@@ -345,7 +400,7 @@ if not pred_vis.empty:
             mode="lines", name="Media móvil 5 días",
             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>MA5: %{y:.3f}<extra></extra>"
         ))
-        # Área celeste claro bajo MA5
+        # Área bajo MA5
         fig1.add_trace(go.Scatter(
             x=pred_vis["Fecha"], y=pred_vis["EMERREL_MA5_rango"],
             mode="lines", line=dict(width=0),
@@ -366,7 +421,6 @@ if not pred_vis.empty:
             mode="lines", line=dict(color="orange", dash="dot"),
             name=f"Nivel Medio (≤ {y_med:.2f})", hoverinfo="skip"
         ))
-        # Entrada de leyenda para Alto (sin línea fija)
         fig1.add_trace(go.Scatter(
             x=[None], y=[None], mode="lines",
             line=dict(color="red", dash="dot"),
@@ -455,7 +509,7 @@ if not pred_vis.empty:
         )[0]
 
         ax1.set_ylabel("EMERREL (0-1)")
-        ax1.set_title("EMERGENCIA RELATIVA DIARIA")
+        ax1.set_title("EMERGENCIA RELATIVA DIARIA - BORDENAVE")
         ax1.tick_params(axis='x', rotation=45)
         ax1.legend(
             handles=[Patch(facecolor=color_map[k], label=k) for k in ["Bajo","Medio","Alto"]] + [line_ma5],
@@ -465,7 +519,7 @@ if not pred_vis.empty:
         st.pyplot(fig1); plt.close(fig1)
 
         # --- Gráfico 2: EMEAC (%) ---
-        st.subheader("EMERGENCIA ACUMULADA DIARIA")
+        st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE")
         st.markdown(f"**Umbrales:** Min={EMEAC_MIN} · Max={EMEAC_MAX} · Ajustable={umbral_usuario}")
         fig2, ax2 = plt.subplots(figsize=(12, 5))
         ax2.plot(pred_vis["Fecha"], emeac_ajust,   label=f"Ajustable ({umbral_usuario})", linewidth=2)
@@ -514,4 +568,3 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
-
