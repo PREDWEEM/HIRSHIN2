@@ -1,8 +1,8 @@
 name: Promote Forecast
 
 on:
-  workflow_dispatch:   # 👈 habilita el botón "Run workflow"
-  push:                # 👈 opcional, si querés que también se ejecute en push
+  workflow_dispatch:    # 👈 habilita "Run workflow" manual en GitHub Actions
+  push:                 # 👈 opcional: se dispara también cuando hay push en main
     branches:
       - main
 
@@ -14,17 +14,18 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      # Ejemplo de paso: instalar dependencias
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # Paso personalizado de tu workflow (ajustar según lo que haga "promote-forecast")
       - name: Run forecast promotion
         run: |
           echo "Promoting forecast..."
           python scripts/promote_forecast.py
+
