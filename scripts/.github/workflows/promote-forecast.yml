@@ -1,1 +1,51 @@
+name: Promote Meteo Forecast to History (daily)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Corre todos los días a las 12:05 UTC = 09:05 en Buenos Aires (UTC-3)
+    - cron: "5 12 * * *"
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    env:
+      API_URL: https://meteobahia.com.ar/scripts/forecast/for-bd.xml
+      PRON_DIAS: "8"
+      TIMEZONE: America/Argentina/Buenos_Aires
+      # Ruta del archivo de histórico dentro del repo. Usa la MISMA que tu app.
+      # Si tu app escribe CSV, usa algo como data/historico.csv
+      # Si es Excel, data/historico.xlsx (el script detecta por extensión).
+      GH_PATH: data/historico.csv
+      # Opcional: si necesitas token para la API
+      API_TOKEN: ${{ secrets.METEOBAHIA_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests python-dateutil lxml openpyxl
+
+      - name: Run promotion script
+        run: |
+          python scripts/promote_forecast.py
+
+      - name: Commit & push if changed
+        run: |
+          git config user.name  "predweem-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git add -A
+            git commit -m "[auto] Promover pronóstico vencido a histórico"
+            git push
+          else
+            echo "No changes to commit."
+          fi
 
