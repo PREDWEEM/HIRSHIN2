@@ -1,8 +1,4 @@
-# Write a patched Streamlit app to /mnt/data/app_patched.py that:
-# - does NOT write to /mnt/data at runtime
-# - loads history with priority: secrets['HIST_LOCAL_PATH'] -> ./historico.xlsx -> /mnt/data/historico.xlsx -> GH -> DEFAULT_HIST_URL
-# - keeps previous features (8-day API, promotion to history, plotting, etc.)
-script = r'''# app.py (patched: robust local history + no writes to /mnt/data)
+# app.py (patched: robust local history + no writes to /mnt/data)
 import os
 import io
 import json
@@ -668,10 +664,3 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
-'''
-with open('/mnt/data/app_patched.py', 'w', encoding='utf-8') as f:
-    f.write(script)
-
-print("Saved to /mnt/data/app_patched.py")
-
-
