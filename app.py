@@ -40,6 +40,12 @@ EMEAC_MIN, EMEAC_MAX = sorted([EMEAC_MIN, EMEAC_MAX])
 EMEAC_AJUSTABLE_DEF = 6                 # Debe estar entre EMEAC_MIN y EMEAC_MAX
 FORZAR_AJUSTABLE_DESDE_CODIGO = False   # True = ignora el slider y usa EMEAC_AJUSTABLE_DEF
 
+# === Regla de lluvia 7 días para clasificar EMERREL ===
+APLICAR_REGLA_LLUVIA_7D = True
+LLUVIA_CORTE_MM_7D = 10.0
+LLUVIA_VENTANA_DIAS = 7
+
+
 # ====================== Config fija (no visible) ======================
 DEFAULT_API_URL  = "https://meteobahia.com.ar/scripts/forecast/for-bd.xml"  # NUNCA visible en la UI
 # DEFAULT_HIST_URL se deja como fallback si no hay GH_* (no visible en la UI)
@@ -381,6 +387,16 @@ if fuente == "API + Histórico":
     df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
     df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
 
+# === Lluvia acumulada 7 días previos (excluye el día actual) ===
+df_prec_lluvia = df_all[["Fecha", "Prec"]].copy()
+df_prec_lluvia["Fecha"] = pd.to_datetime(df_prec_lluvia["Fecha"]).dt.normalize()
+df_prec_lluvia = df_prec_lluvia.sort_values("Fecha")
+df_prec_lluvia["Prec"] = pd.to_numeric(df_prec_lluvia["Prec"], errors="coerce").fillna(0.0)
+df_prec_lluvia["lluvia_7d_prev"] = (
+    df_prec_lluvia["Prec"].shift(1).rolling(window=LLUVIA_VENTANA_DIAS, min_periods=1).sum().fillna(0.0)
+)
+
+
     # Diagnóstico de continuidad entre 1-feb y 1-oct (muestra primeros faltantes si existen)
     try:
         start_check = pd.Timestamp(min_api_date.year, 2, 1)
@@ -450,6 +466,7 @@ pred_vis = reiniciar_feb_oct(resultado[["Fecha", "EMERREL (0-1)"]].copy(), umbra
 st.caption(f"Fuente de datos: {source_label}")
 st.caption(f"Última actualización: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.caption(f"Umbral EMEAC usado: {umbral_usuario}" + (" (forzado desde código)" if usar_codigo else ""))
+st.caption(f"Regla lluvia 7d: {'ON' if APLICAR_REGLA_LLUVIA_7D else 'OFF'} · Corte {LLUVIA_CORTE_MM_7D} mm (previos a la fecha)")
 
 # ================= Gráficos + Tabla (rango 1-feb → 1-oct) =================
 if not pred_vis.empty:
@@ -457,9 +474,17 @@ if not pred_vis.empty:
     pred_vis = pred_vis.copy()
     pred_vis["EMERREL_MA5_rango"] = pred_vis["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
 
-    # Clasificación 0.2 / 0.4
-    def clasif(v): return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
-    pred_vis["Nivel de EMERREL"] = pred_vis["EMERREL (0-1)"].apply(clasif)
+    # Clasificación 0.2 / 0.4 con condicionante de lluvia 7d
+    pred_vis = pred_vis.merge(df_prec_lluvia[["Fecha", "lluvia_7d_prev"]], on="Fecha", how="left")
+    pred_vis["lluvia_7d_prev"] = pred_vis["lluvia_7d_prev"].fillna(0.0)
+
+    def _clasif_base(v): return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
+    def clasif_cond(row):
+        base = _clasif_base(row["EMERREL (0-1)"])
+        if APLICAR_REGLA_LLUVIA_7D and base in ("Medio", "Alto") and row["lluvia_7d_prev"] < LLUVIA_CORTE_MM_7D:
+            return "Bajo"
+        return base
+    pred_vis["Nivel de EMERREL"] = pred_vis.apply(clasif_cond, axis=1)
 
     # ---------- SERIES EMEAC corregidas ----------
     emerrel_rango = pred_vis["EMERREL (0-1)"].to_numpy()
@@ -639,6 +664,7 @@ if not pred_vis.empty:
     tabla_display = pd.DataFrame({
         "Fecha": pred_vis["Fecha"],
         "Día juliano": pred_vis["Día juliano"].astype(int),
+        "Lluvia 7d (mm)": pred_vis["lluvia_7d_prev"].round(1),
         "Nivel de EMERREL": nivel_emoji_txt,
         "EMEAC (%)": emeac_ajust
     })
@@ -647,6 +673,7 @@ if not pred_vis.empty:
     tabla_csv = pd.DataFrame({
         "Fecha": pred_vis["Fecha"],
         "Día juliano": pred_vis["Día juliano"].astype(int),
+        "Lluvia 7d (mm)": pred_vis["lluvia_7d_prev"].round(1),
         "Nivel de EMERREL": pred_vis["Nivel de EMERREL"],  # texto: Bajo/Medio/Alto
         "EMEAC (%)": emeac_ajust
     })
