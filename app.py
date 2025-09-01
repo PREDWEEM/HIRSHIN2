@@ -114,21 +114,81 @@ def _github_put_file(repo, path, branch, content_bytes, msg, sha=None, committer
     return r.json()
 
 
+def _normalize_hist_like(df: pd.DataFrame, api_year: int) -> pd.DataFrame:
+    """Normaliza un histórico heterogéneo a columnas estándar.
+    Reglas:
+      - Mapea encabezados flexibles a ['Fecha','Julian_days','TMAX','TMIN','Prec']
+      - Si falta 'Fecha' y hay 'Julian_days', la deriva usando api_year
+      - Si falta 'Julian_days' y hay 'Fecha', lo calcula
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])    
+    out = df.copy()
+    out.columns = [str(c).strip() for c in out.columns]
+    low2orig = {c.lower(): c for c in out.columns}
+    def has(c): return c in low2orig
+    def col(c): return low2orig[c]
+    ren = {}
+    for cands, tgt in [
+        (["fecha","date","fechas"], "Fecha"),
+        (["julian_days","julianday","julian","dia_juliano","doy"], "Julian_days"),
+        (["tmax","t_max","t max","tx","tmax(°c)"], "TMAX"),
+        (["tmin","t_min","t min","tn","tmin(°c)"], "TMIN"),
+        (["prec","ppt","precip","lluvia","mm","prcp"], "Prec"),
+    ]:
+        for c in cands:
+            if has(c):
+                ren[col(c)] = tgt
+                break
+    out = out.rename(columns=ren)
+
+    # tipos
+    if "Fecha" in out.columns:
+        out["Fecha"] = pd.to_datetime(out["Fecha"], errors="coerce")
+    for c in ["TMAX","TMIN","Prec","Julian_days"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    # Derivar faltantes
+    if "Fecha" not in out.columns and "Julian_days" in out.columns:
+        base = pd.Timestamp(int(api_year), 1, 1)
+        out["Fecha"] = out["Julian_days"].astype(float).apply(lambda d: base + pd.Timedelta(days=int(d) - 1))
+    if "Julian_days" not in out.columns and "Fecha" in out.columns:
+        out["Julian_days"] = pd.to_datetime(out["Fecha"]).dt.dayofyear
+
+    req = {"Fecha","Julian_days","TMAX","TMIN","Prec"}
+    faltan = req - set(out.columns)
+    if faltan:
+        # devolvemos al menos las presentes para que el caller pueda diagnosticar
+        return out
+
+    out = out.dropna(subset=["Fecha"]).sort_values("Fecha").reset_index(drop=True)
+    out["Julian_days"] = pd.to_datetime(out["Fecha"]).dt.dayofyear
+    for c in ["TMAX","TMIN","Prec"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out[["Fecha","Julian_days","TMAX","TMIN","Prec"]]
+
 def promote_forecast_into_history(df_hist: pd.DataFrame, df_api: pd.DataFrame) -> pd.DataFrame:
     """
     Promueve filas del pronóstico con Fecha <= 'hoy' (zona America/Argentina/Buenos_Aires)
     dentro del histórico. Prioridad en choque por Fecha: histórico > pronóstico.
+    Acepta históricos con encabezados heterogéneos; intenta normalizarlos.
     """
-    if df_hist is None:
-        df_hist = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
-    if df_hist.empty:
-        df_hist = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
+    # Determinar api_year desde df_api si es posible
+    api_year = int(pd.to_datetime(df_api["Fecha"]).min().year) if (df_api is not None and not df_api.empty) else pd.Timestamp.now().year
 
-    df_hist = df_hist.copy()
-    df_hist["Fecha"] = pd.to_datetime(df_hist["Fecha"], errors="coerce")
+    if df_hist is None:
+        df_hist = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])    
+
+    # Normalizar histórico heterogéneo
+    df_hist_norm = _normalize_hist_like(df_hist, api_year=api_year)
+
+    if "Fecha" not in df_hist_norm.columns:
+        st.warning(f"El histórico no contiene columna 'Fecha' tras normalización. Columnas encontradas: {list(df_hist.columns)}")
+        df_hist_norm = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])    
 
     if df_api is None or df_api.empty:
-        return df_hist.sort_values("Fecha").reset_index(drop=True)
+        return df_hist_norm.sort_values("Fecha").reset_index(drop=True)
 
     df_api = df_api.copy()
     df_api["Fecha"] = pd.to_datetime(df_api["Fecha"], errors="coerce")
@@ -137,10 +197,10 @@ def promote_forecast_into_history(df_hist: pd.DataFrame, df_api: pd.DataFrame) -
     vencido = df_api.loc[df_api["Fecha"].dt.tz_localize(None) <= hoy_local.tz_localize(None)]
 
     if vencido.empty:
-        return df_hist.sort_values("Fecha").reset_index(drop=True)
+        return df_hist_norm.sort_values("Fecha").reset_index(drop=True)
 
     # Concatenamos poniendo primero histórico para que se conserve si hay choque
-    merged = pd.concat([df_hist.sort_values("Fecha"), vencido], ignore_index=True)
+    merged = pd.concat([df_hist_norm.sort_values("Fecha"), vencido], ignore_index=True)
     merged = (
         merged
         .dropna(subset=["Fecha"]) 
@@ -154,7 +214,7 @@ def promote_forecast_into_history(df_hist: pd.DataFrame, df_api: pd.DataFrame) -
     return merged.sort_values("Fecha").reset_index(drop=True)
 
 
-def try_commit_history_csv(df_hist_nuevo: pd.DataFrame) -> bool:
+def try_commit_history_csv(df_hist_nuevo: pd.DataFrame) -> bool:(df_hist_nuevo: pd.DataFrame) -> bool:
     """Sube el CSV actualizado al repo configurado. Devuelve True si comiteó."""
     repo   = st.secrets["GH_REPO"]
     branch = st.secrets["GH_BRANCH"]
@@ -590,4 +650,3 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
-
