@@ -1,7 +1,10 @@
 name: Promote Meteo Forecast to History (daily)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:    # 👈 esto habilita el botón "Run workflow"
+  push:
+    branches: [ main ]  # opcional: se dispara también al pushear a main
+
   schedule:
     # Corre todos los días a las 12:05 UTC = 09:05 en Buenos Aires (UTC-3)
     - cron: "5 12 * * *"
