@@ -1,5 +1,8 @@
-# Write the complete Streamlit app script to /mnt/data/app.py
-script = r'''# app.py
+# Write a patched Streamlit app to /mnt/data/app_patched.py that:
+# - does NOT write to /mnt/data at runtime
+# - loads history with priority: secrets['HIST_LOCAL_PATH'] -> ./historico.xlsx -> /mnt/data/historico.xlsx -> GH -> DEFAULT_HIST_URL
+# - keeps previous features (8-day API, promotion to history, plotting, etc.)
+script = r'''# app.py (patched: robust local history + no writes to /mnt/data)
 import os
 import io
 import json
@@ -296,27 +299,33 @@ if fuente == "API + Histórico":
         st.error("No se pudieron obtener datos del pronóstico.")
         st.stop()
 
-    # 2) Cargar histórico (PRIORIDAD: archivo local /mnt/data/historico.xlsx)
-    HIST_LOCAL = "/mnt/data/historico.xlsx"
-    usar_local = os.path.exists(HIST_LOCAL)
-    if usar_local:
-        try:
-            df_hist_publico = pd.read_excel(HIST_LOCAL)
-            hist_source_desc = f"Hist (local: {os.path.basename(HIST_LOCAL)})"
-        except Exception as e:
-            st.warning(f"No pude leer el histórico local: {e}")
-            usar_local = False
-    if not usar_local:
+    # 2) Cargar histórico (PRIORIDAD: secrets → archivo repo → /mnt/data → URL/CSV)
+    HIST_LOCAL = st.secrets.get("HIST_LOCAL_PATH", "").strip()
+    candidatos = []
+    if HIST_LOCAL:
+        candidatos.append(HIST_LOCAL)
+    candidatos.append("./historico.xlsx")            # archivo junto al código (repo)
+    candidatos.append("/mnt/data/historico.xlsx")    # solo si existe en el entorno
+
+    df_hist_publico = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
+    hist_source_desc = "Hist (vacío)"
+
+    for path in candidatos:
+        if path and os.path.exists(path):
+            try:
+                df_hist_publico = pd.read_excel(path)
+                hist_source_desc = f"Hist (local: {os.path.basename(path)})"
+                break
+            except Exception as e:
+                st.warning(f"No pude leer el histórico local {path}: {e}")
+
+    if df_hist_publico.empty:
         try:
             if _have_gh_secrets():
                 # CSV publicado en GH_REPO/GH_BRANCH/GH_PATH
-                try:
-                    from fetch_meteobahia import load_public_csv
-                    df_hist_publico, _hist_src = load_public_csv(parse_dates=True)
-                    hist_source_desc = "Hist (GitHub público)"
-                except Exception:
-                    df_hist_publico = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
-                    hist_source_desc = "Hist (vacío)"
+                from fetch_meteobahia import load_public_csv
+                df_hist_publico, _hist_src = load_public_csv(parse_dates=True)
+                hist_source_desc = "Hist (GitHub público)"
             else:
                 # Fallback al Excel fijo anterior
                 df_hist_publico = read_hist_from_url(DEFAULT_HIST_URL)
@@ -660,8 +669,9 @@ if not pred_vis.empty:
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
 '''
-with open('/mnt/data/app.py', 'w', encoding='utf-8') as f:
+with open('/mnt/data/app_patched.py', 'w', encoding='utf-8') as f:
     f.write(script)
 
-print("Saved to /mnt/data/app.py")
+print("Saved to /mnt/data/app_patched.py")
+
 
