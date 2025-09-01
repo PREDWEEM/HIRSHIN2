@@ -1,5 +1,4 @@
-# Write the final Streamlit app (with 7-day rainfall rule and robust history loading) to /mnt/data/app.py
-script = r'''# app.py – HIRSHIN (histórico robusto + regla de lluvia 7d)
+# app.py – HIRSHIN (histórico robusto + regla de lluvia 7d)
 import os
 import io
 import json
@@ -693,9 +692,3 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
-'''
-with open('/mnt/data/app.py', 'w', encoding='utf-8') as f:
-    f.write(script)
-
-print("Saved to /mnt/data/app.py")
-
