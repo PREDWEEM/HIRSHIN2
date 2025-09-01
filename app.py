@@ -1,7 +1,4 @@
-# Generate final Streamlit app with the updated 7‑day rainfall rule (≥10 mm within previous 7 days, calendar-based)
-from pathlib import Path
-
-app_code = r'''# app.py – HIRSHIN (histórico robusto + regla de lluvia 7d calendario, umbral inclusivo ≥10 mm)
+# app.py – HIRSHIN (histórico robusto + regla de lluvia 7d calendario, umbral inclusivo ≥10 mm)
 import os
 import io
 import json
@@ -715,7 +712,3 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
-'''
-
-Path('/mnt/data/app.py').write_text(app_code, encoding='utf-8')
-print("Saved /mnt/data/app.py")
