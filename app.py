@@ -1,4 +1,5 @@
-# app.py (patched: robust local history + no writes to /mnt/data)
+# Write the final Streamlit app (with 7-day rainfall rule and robust history loading) to /mnt/data/app.py
+script = r'''# app.py – HIRSHIN (histórico robusto + regla de lluvia 7d)
 import os
 import io
 import json
@@ -44,7 +45,6 @@ FORZAR_AJUSTABLE_DESDE_CODIGO = False   # True = ignora el slider y usa EMEAC_AJ
 APLICAR_REGLA_LLUVIA_7D = True
 LLUVIA_CORTE_MM_7D = 10.0
 LLUVIA_VENTANA_DIAS = 7
-
 
 # ====================== Config fija (no visible) ======================
 DEFAULT_API_URL  = "https://meteobahia.com.ar/scripts/forecast/for-bd.xml"  # NUNCA visible en la UI
@@ -387,15 +387,14 @@ if fuente == "API + Histórico":
     df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
     df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
 
-# === Lluvia acumulada 7 días previos (excluye el día actual) ===
-df_prec_lluvia = df_all[["Fecha", "Prec"]].copy()
-df_prec_lluvia["Fecha"] = pd.to_datetime(df_prec_lluvia["Fecha"]).dt.normalize()
-df_prec_lluvia = df_prec_lluvia.sort_values("Fecha")
-df_prec_lluvia["Prec"] = pd.to_numeric(df_prec_lluvia["Prec"], errors="coerce").fillna(0.0)
-df_prec_lluvia["lluvia_7d_prev"] = (
-    df_prec_lluvia["Prec"].shift(1).rolling(window=LLUVIA_VENTANA_DIAS, min_periods=1).sum().fillna(0.0)
-)
-
+    # === Lluvia acumulada 7 días previos (excluye el día actual) ===
+    df_prec_lluvia = df_all[["Fecha", "Prec"]].copy()
+    df_prec_lluvia["Fecha"] = pd.to_datetime(df_prec_lluvia["Fecha"]).dt.normalize()
+    df_prec_lluvia = df_prec_lluvia.sort_values("Fecha")
+    df_prec_lluvia["Prec"] = pd.to_numeric(df_prec_lluvia["Prec"], errors="coerce").fillna(0.0)
+    df_prec_lluvia["lluvia_7d_prev"] = (
+        df_prec_lluvia["Prec"].shift(1).rolling(window=LLUVIA_VENTANA_DIAS, min_periods=1).sum().fillna(0.0)
+    )
 
     # Diagnóstico de continuidad entre 1-feb y 1-oct (muestra primeros faltantes si existen)
     try:
@@ -478,12 +477,15 @@ if not pred_vis.empty:
     pred_vis = pred_vis.merge(df_prec_lluvia[["Fecha", "lluvia_7d_prev"]], on="Fecha", how="left")
     pred_vis["lluvia_7d_prev"] = pred_vis["lluvia_7d_prev"].fillna(0.0)
 
-    def _clasif_base(v): return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
+    def _clasif_base(v):
+        return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
+
     def clasif_cond(row):
         base = _clasif_base(row["EMERREL (0-1)"])
         if APLICAR_REGLA_LLUVIA_7D and base in ("Medio", "Alto") and row["lluvia_7d_prev"] < LLUVIA_CORTE_MM_7D:
             return "Bajo"
         return base
+
     pred_vis["Nivel de EMERREL"] = pred_vis.apply(clasif_cond, axis=1)
 
     # ---------- SERIES EMEAC corregidas ----------
@@ -691,3 +693,9 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
+'''
+with open('/mnt/data/app.py', 'w', encoding='utf-8') as f:
+    f.write(script)
+
+print("Saved to /mnt/data/app.py")
+
