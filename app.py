@@ -1,15 +1,17 @@
-# app.py
+# Write the complete Streamlit app script to /mnt/data/app.py
+script = r'''# app.py
+import os
+import io
+import json
+import base64
+from datetime import datetime, timezone
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
-import io
 import requests
-import base64
-import json
-from datetime import datetime, timezone
-import os
 
 from modelo_emerrel import ejecutar_modelo
 from meteobahia import (
@@ -59,7 +61,6 @@ def fetch_api_cached(url: str, token: str | None, nonce: int, use_browser_header
     return fetch_meteobahia_api_xml(url.strip(), token=token or None, use_browser_headers=use_browser_headers)
 
 # Fallback para leer histórico si no usamos GitHub CSV público
-
 def read_hist_from_url(url: str) -> pd.DataFrame:
     if not url.strip():
         return pd.DataFrame()
@@ -77,7 +78,6 @@ def read_hist_from_url(url: str) -> pd.DataFrame:
 
 # ===================== Persistencia en GitHub (opcional) =====================
 # Usa st.secrets: GH_TOKEN, GH_REPO, GH_BRANCH, GH_PATH, GH_USER_NAME, GH_USER_EMAIL
-
 def _have_gh_secrets():
     req = ["GH_TOKEN", "GH_REPO", "GH_BRANCH", "GH_PATH"]
     return all(k in st.secrets for k in req)
@@ -97,7 +97,6 @@ def _github_get_file_sha(repo, path, ref):
         return None
     r.raise_for_status()
 
-
 def _github_put_file(repo, path, branch, content_bytes, msg, sha=None, committer=None):
     url = f"https://api.github.com/repos/{repo}/contents/{path}"
     payload = {
@@ -113,7 +112,6 @@ def _github_put_file(repo, path, branch, content_bytes, msg, sha=None, committer
     r.raise_for_status()
     return r.json()
 
-
 def _normalize_hist_like(df: pd.DataFrame, api_year: int) -> pd.DataFrame:
     """Normaliza un histórico heterogéneo a columnas estándar.
     Reglas:
@@ -122,7 +120,7 @@ def _normalize_hist_like(df: pd.DataFrame, api_year: int) -> pd.DataFrame:
       - Si falta 'Julian_days' y hay 'Fecha', lo calcula
     """
     if df is None or df.empty:
-        return pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])    
+        return pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
     out = df.copy()
     out.columns = [str(c).strip() for c in out.columns]
     low2orig = {c.lower(): c for c in out.columns}
@@ -142,14 +140,12 @@ def _normalize_hist_like(df: pd.DataFrame, api_year: int) -> pd.DataFrame:
                 break
     out = out.rename(columns=ren)
 
-    # tipos
     if "Fecha" in out.columns:
         out["Fecha"] = pd.to_datetime(out["Fecha"], errors="coerce")
     for c in ["TMAX","TMIN","Prec","Julian_days"]:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    # Derivar faltantes
     if "Fecha" not in out.columns and "Julian_days" in out.columns:
         base = pd.Timestamp(int(api_year), 1, 1)
         out["Fecha"] = out["Julian_days"].astype(float).apply(lambda d: base + pd.Timedelta(days=int(d) - 1))
@@ -178,14 +174,14 @@ def promote_forecast_into_history(df_hist: pd.DataFrame, df_api: pd.DataFrame) -
     api_year = int(pd.to_datetime(df_api["Fecha"]).min().year) if (df_api is not None and not df_api.empty) else pd.Timestamp.now().year
 
     if df_hist is None:
-        df_hist = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])    
+        df_hist = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
 
     # Normalizar histórico heterogéneo
     df_hist_norm = _normalize_hist_like(df_hist, api_year=api_year)
 
     if "Fecha" not in df_hist_norm.columns:
         st.warning(f"El histórico no contiene columna 'Fecha' tras normalización. Columnas encontradas: {list(df_hist.columns)}")
-        df_hist_norm = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])    
+        df_hist_norm = pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
 
     if df_api is None or df_api.empty:
         return df_hist_norm.sort_values("Fecha").reset_index(drop=True)
@@ -203,8 +199,8 @@ def promote_forecast_into_history(df_hist: pd.DataFrame, df_api: pd.DataFrame) -
     merged = pd.concat([df_hist_norm.sort_values("Fecha"), vencido], ignore_index=True)
     merged = (
         merged
-        .dropna(subset=["Fecha"]) 
-        .sort_values(["Fecha"]) 
+        .dropna(subset=["Fecha"])
+        .sort_values(["Fecha"])
         .drop_duplicates(subset=["Fecha"], keep="first")
         .reset_index(drop=True)
     )
@@ -213,15 +209,13 @@ def promote_forecast_into_history(df_hist: pd.DataFrame, df_api: pd.DataFrame) -
         merged[c] = pd.to_numeric(merged[c], errors="coerce")
     return merged.sort_values("Fecha").reset_index(drop=True)
 
-
-def try_commit_history_csv(df_hist_nuevo: pd.DataFrame) -> bool:(df_hist_nuevo: pd.DataFrame) -> bool:
+def try_commit_history_csv(df_hist_nuevo: pd.DataFrame) -> bool:
     """Sube el CSV actualizado al repo configurado. Devuelve True si comiteó."""
     repo   = st.secrets["GH_REPO"]
     branch = st.secrets["GH_BRANCH"]
     path   = st.secrets["GH_PATH"]
 
     sha_actual = _github_get_file_sha(repo, path, branch)
-
     csv_bytes = df_hist_nuevo.to_csv(index=False, date_format="%Y-%m-%d").encode("utf-8")
 
     committer = None
@@ -382,6 +376,19 @@ if fuente == "API + Histórico":
     df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
     df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
 
+    # Diagnóstico de continuidad entre 1-feb y 1-oct (muestra primeros faltantes si existen)
+    try:
+        start_check = pd.Timestamp(min_api_date.year, 2, 1)
+        end_check = pd.Timestamp(min_api_date.year, 10, 1)
+        rng = pd.date_range(start_check, end_check, freq="D")
+        faltan = set(rng.date) - set(pd.to_datetime(df_all["Fecha"]).dt.date)
+        if faltan:
+            st.warning(f"Fechas sin datos en el rango 1-feb → 1-oct: {len(faltan)} días (ej: {sorted(list(faltan))[:5]}...)")
+        else:
+            st.success("Continuidad OK: sin huecos entre 1-feb y 1-oct.")
+    except Exception:
+        pass
+
     if df_all.empty:
         st.error("Fusión vacía (ni histórico válido ni API).")
         st.stop()
@@ -389,7 +396,9 @@ if fuente == "API + Histórico":
     input_df_raw = df_all.copy()
     src = ["API"]
     if not df_hist_trim.empty:
-        src.append(f"Hist ({df_hist_trim['Fecha'].min().date()} → {df_hist_trim['Fecha'].max().date()})")
+        src.append(f"{hist_source_desc} ({df_hist_trim['Fecha'].min().date()} → {df_hist_trim['Fecha'].max().date()})")
+    else:
+        src.append(hist_source_desc)
     source_label = " + ".join(src)
 
 elif fuente == "Subir Excel":
@@ -430,7 +439,7 @@ if fechas_excel is not None:
     resultado["Fecha"] = fechas_excel
 
 # ================= Rango 1-feb → 1-oct =================
-pred_vis = reiniciar_feb_oct(resultado[["Fecha", "EMERREL (0-1)"].copy()], umbral_ajustable=umbral_usuario)
+pred_vis = reiniciar_feb_oct(resultado[["Fecha", "EMERREL (0-1)"]].copy(), umbral_ajustable=umbral_usuario)
 
 # Sello y fuente (sin exponer URL)
 st.caption(f"Fuente de datos: {source_label}")
@@ -650,3 +659,9 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
+'''
+with open('/mnt/data/app.py', 'w', encoding='utf-8') as f:
+    f.write(script)
+
+print("Saved to /mnt/data/app.py")
+
