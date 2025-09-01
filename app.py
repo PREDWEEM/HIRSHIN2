@@ -1,4 +1,7 @@
-# app.py – HIRSHIN (histórico robusto + regla de lluvia 7d)
+# Generate final Streamlit app with the updated 7‑day rainfall rule (≥10 mm within previous 7 days, calendar-based)
+from pathlib import Path
+
+app_code = r'''# app.py – HIRSHIN (histórico robusto + regla de lluvia 7d calendario, umbral inclusivo ≥10 mm)
 import os
 import io
 import json
@@ -42,8 +45,8 @@ FORZAR_AJUSTABLE_DESDE_CODIGO = False   # True = ignora el slider y usa EMEAC_AJ
 
 # === Regla de lluvia 7 días para clasificar EMERREL ===
 APLICAR_REGLA_LLUVIA_7D = True
-LLUVIA_CORTE_MM_7D = 10.0
-LLUVIA_VENTANA_DIAS = 7
+LLUVIA_CORTE_MM_7D = 10.0   # Inclusivo: se cumple con ≥10 mm
+LLUVIA_VENTANA_DIAS = 7     # ventana de 7 días calendario
 
 # ====================== Config fija (no visible) ======================
 DEFAULT_API_URL  = "https://meteobahia.com.ar/scripts/forecast/for-bd.xml"  # NUNCA visible en la UI
@@ -386,14 +389,19 @@ if fuente == "API + Histórico":
     df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
     df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
 
-    # === Lluvia acumulada 7 días previos (excluye el día actual) ===
+    # === Lluvia acumulada 7 días previos (excluye el día actual) – modo calendario ===
     df_prec_lluvia = df_all[["Fecha", "Prec"]].copy()
     df_prec_lluvia["Fecha"] = pd.to_datetime(df_prec_lluvia["Fecha"]).dt.normalize()
-    df_prec_lluvia = df_prec_lluvia.sort_values("Fecha")
-    df_prec_lluvia["Prec"] = pd.to_numeric(df_prec_lluvia["Prec"], errors="coerce").fillna(0.0)
-    df_prec_lluvia["lluvia_7d_prev"] = (
-        df_prec_lluvia["Prec"].shift(1).rolling(window=LLUVIA_VENTANA_DIAS, min_periods=1).sum().fillna(0.0)
-    )
+    # Consolidar por fecha por si hay duplicados y reindexar a diario
+    df_prec_lluvia = df_prec_lluvia.groupby("Fecha", as_index=False)["Prec"].sum()
+    idx = pd.date_range(df_prec_lluvia["Fecha"].min(), df_prec_lluvia["Fecha"].max(), freq="D")
+    s = (df_prec_lluvia.set_index("Fecha")["Prec"]
+            .reindex(idx)
+            .fillna(0.0)
+            .astype(float))
+    # Suma de los 7 días anteriores (excluye el día actual con shift(1)); umbral inclusivo ≥ 10
+    lluvia_7d_prev = s.shift(1).rolling(window=LLUVIA_VENTANA_DIAS, min_periods=LLUVIA_VENTANA_DIAS).sum().fillna(0.0)
+    df_prec_lluvia = pd.DataFrame({"Fecha": idx, "lluvia_7d_prev": lluvia_7d_prev.values})
 
     # Diagnóstico de continuidad entre 1-feb y 1-oct (muestra primeros faltantes si existen)
     try:
@@ -470,24 +478,26 @@ st.caption(f"Regla lluvia 7d: {'ON' if APLICAR_REGLA_LLUVIA_7D else 'OFF'} · Co
 if not pred_vis.empty:
     # --- Cálculos previos ---
     pred_vis = pred_vis.copy()
+    pred_vis["Fecha"] = pd.to_datetime(pred_vis["Fecha"]).dt.normalize()
     pred_vis["EMERREL_MA5_rango"] = pred_vis["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
 
-    # Clasificación 0.2 / 0.4 con condicionante de lluvia 7d
-    pred_vis = pred_vis.merge(df_prec_lluvia[["Fecha", "lluvia_7d_prev"]], on="Fecha", how="left")
-    pred_vis["lluvia_7d_prev"] = pred_vis["lluvia_7d_prev"].fillna(0.0)
-
-    def _clasif_base(v):
+    # --- Nivel base (sin regla) y fusión de lluvia 7d ---
+    def _nivel_base(v):
         return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
+    pred_vis["Nivel_base"] = pred_vis["EMERREL (0-1)"].apply(_nivel_base)
 
-    def clasif_cond(row):
-        base = _clasif_base(row["EMERREL (0-1)"])
-        if APLICAR_REGLA_LLUVIA_7D and base in ("Medio", "Alto") and row["lluvia_7d_prev"] < LLUVIA_CORTE_MM_7D:
-            return "Bajo"
-        return base
+    pred_vis = pred_vis.merge(df_prec_lluvia, on="Fecha", how="left")
+    pred_vis["lluvia_7d_prev"] = pd.to_numeric(pred_vis["lluvia_7d_prev"], errors="coerce").fillna(0.0)
 
-    pred_vis["Nivel de EMERREL"] = pred_vis.apply(clasif_cond, axis=1)
+    # --- Regla: Medio/Alto solo si lluvia_7d_prev ≥ corte (umbral inclusivo) ---
+    pred_vis["gated_down"] = (
+        APLICAR_REGLA_LLUVIA_7D
+        & pred_vis["Nivel_base"].isin(["Medio", "Alto"])
+        & (pred_vis["lluvia_7d_prev"] < LLUVIA_CORTE_MM_7D)
+    )
+    pred_vis["Nivel de EMERREL"] = np.where(pred_vis["gated_down"], "Bajo", pred_vis["Nivel_base"])
 
-    # ---------- SERIES EMEAC corregidas ----------
+    # ---------- SERIES EMEAC (a partir de EMERREL) ----------
     emerrel_rango = pred_vis["EMERREL (0-1)"].to_numpy()
     cumsum_rango = np.cumsum(emerrel_rango)
 
@@ -506,22 +516,42 @@ if not pred_vis.empty:
         st.subheader("EMERGENCIA RELATIVA DIARIA - BORDENAVE")
         fig1 = go.Figure()
 
-        # Barras por nivel
+        # Barras por nivel base (altura = EMERREL, color = nivel base, marca X si fue bajado por regla)
         fig1.add_bar(
             x=pred_vis["Fecha"],
             y=pred_vis["EMERREL (0-1)"],
-            marker=dict(color=pred_vis["Nivel de EMERREL"].map(color_map).tolist()),
-            customdata=pred_vis["Nivel de EMERREL"],
-            hovertemplate="Fecha: %{x|%d-%b-%Y}<br>EMERREL: %{y:.3f}<br>Nivel: %{customdata}<extra></extra>",
+            marker=dict(color=pred_vis["Nivel_base"].map(color_map).tolist()),
+            customdata=np.stack([pred_vis["Nivel_base"], pred_vis["Nivel de EMERREL"], pred_vis["lluvia_7d_prev"]], axis=-1),
+            hovertemplate=(
+                "Fecha: %{x|%d-%b-%Y}"
+                "<br>EMERREL: %{y:.3f}"
+                "<br>Nivel base: %{customdata[0]}"
+                "<br>Nivel final (regla): %{customdata[1]}"
+                "<br>Lluvia 7d: %{customdata[2]:.1f} mm"
+                "<extra></extra>"
+            ),
             name="EMERREL (0-1)",
         )
+
+        # Marcar con 'X' los días bajados por la regla
+        mask_gate = pred_vis["gated_down"]
+        if mask_gate.any():
+            fig1.add_trace(go.Scatter(
+                x=pred_vis.loc[mask_gate, "Fecha"],
+                y=pred_vis.loc[mask_gate, "EMERREL (0-1)"],
+                mode="markers",
+                marker=dict(symbol="x", size=10),
+                name="Bajado por regla (lluvia 7d < corte)",
+                hovertemplate="Ajustado por regla (lluvia 7d < corte)<extra></extra>"
+            ))
+
         # Línea MA5
         fig1.add_trace(go.Scatter(
             x=pred_vis["Fecha"], y=pred_vis["EMERREL_MA5_rango"],
             mode="lines", name="Media móvil 5 días",
             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>MA5: %{y:.3f}<extra></extra>"
         ))
-        # Área celeste claro bajo MA5
+        # Área bajo MA5
         fig1.add_trace(go.Scatter(
             x=pred_vis["Fecha"], y=pred_vis["EMERREL_MA5_rango"],
             mode="lines", line=dict(width=0),
@@ -529,7 +559,7 @@ if not pred_vis.empty:
             name="Área MA5", hoverinfo="skip", showlegend=False
         ))
 
-        # Líneas de referencia (0.2 y 0.4) + leyenda de niveles
+        # Líneas de referencia (0.2 y 0.4) + leyenda
         y_low, y_med = 0.2, 0.4
         x0, x1 = pred_vis["Fecha"].min(), pred_vis["Fecha"].max()
         fig1.add_trace(go.Scatter(
@@ -542,7 +572,6 @@ if not pred_vis.empty:
             mode="lines", line=dict(color="orange", dash="dot"),
             name=f"Nivel Medio (≤ {y_med:.2f})", hoverinfo="skip"
         ))
-        # Entrada de leyenda para Alto (sin línea fija)
         fig1.add_trace(go.Scatter(
             x=[None], y=[None], mode="lines",
             line=dict(color="red", dash="dot"),
@@ -562,7 +591,7 @@ if not pred_vis.empty:
         st.markdown(f"**Umbrales:** Min={EMEAC_MIN} · Max={EMEAC_MAX} · Ajustable={umbral_usuario}")
 
         fig2 = go.Figure()
-        # Banda min–max (primero la inferior, luego la superior con fill=tonexty)
+        # Banda min–max
         fig2.add_trace(go.Scatter(
             x=pred_vis["Fecha"], y=emeac_min_pct,  # inferior (umbral más alto)
             mode="lines", line=dict(width=0),
@@ -619,11 +648,15 @@ if not pred_vis.empty:
             pred_vis["Fecha"], 0, pred_vis["EMERREL_MA5_rango"],
             color="skyblue", alpha=0.3, zorder=0
         )
-        # Barras
+        # Barras por nivel base
         ax1.bar(
             pred_vis["Fecha"], pred_vis["EMERREL (0-1)"],
-            color=pred_vis["Nivel de EMERREL"].map(color_map)
+            color=pred_vis["Nivel_base"].map(color_map)
         )
+        # Cruces 'X' en días bajados por la regla
+        gate = pred_vis["gated_down"]
+        ax1.plot(pred_vis.loc[gate, "Fecha"], pred_vis.loc[gate, "EMERREL (0-1)"], "x", markersize=8, color="black", label="Bajado por regla")
+
         # Línea MA5
         line_ma5 = ax1.plot(
             pred_vis["Fecha"], pred_vis["EMERREL_MA5_rango"],
@@ -657,28 +690,18 @@ if not pred_vis.empty:
     # --- Tabla (después de ambos gráficos) ---
     pred_vis["Día juliano"] = pd.to_datetime(pred_vis["Fecha"]).dt.dayofyear
 
-    # Emojis SOLO para visualización de "Nivel de EMERREL"
-    nivel_emoji = {"Bajo": "🟢", "Medio": "🟡", "Alto": "🔴"}
-    nivel_emoji_txt = pred_vis["Nivel de EMERREL"].map(lambda x: f"{nivel_emoji.get(x, '')} {x}")
-
-    # Tabla para mostrar (con emoji en 'Nivel de EMERREL')
     tabla_display = pd.DataFrame({
         "Fecha": pred_vis["Fecha"],
         "Día juliano": pred_vis["Día juliano"].astype(int),
         "Lluvia 7d (mm)": pred_vis["lluvia_7d_prev"].round(1),
-        "Nivel de EMERREL": nivel_emoji_txt,
+        "Nivel base": pred_vis["Nivel_base"],
+        "Nivel final": pred_vis["Nivel de EMERREL"],
+        "Bajado por regla": np.where(pred_vis["gated_down"], "Sí", "No"),
         "EMEAC (%)": emeac_ajust
     })
 
-    # Tabla para exportar CSV (solo texto limpio en 'Nivel de EMERREL')
-    tabla_csv = pd.DataFrame({
-        "Fecha": pred_vis["Fecha"],
-        "Día juliano": pred_vis["Día juliano"].astype(int),
-        "Lluvia 7d (mm)": pred_vis["lluvia_7d_prev"].round(1),
-        "Nivel de EMERREL": pred_vis["Nivel de EMERREL"],  # texto: Bajo/Medio/Alto
-        "EMEAC (%)": emeac_ajust
-    })
-
+    # Tabla para exportar CSV (texto limpio)
+    tabla_csv = tabla_display.copy()
     st.subheader("Tabla de Resultados (rango 1-feb → 1-oct)")
     st.dataframe(tabla_display, use_container_width=True)
 
@@ -692,3 +715,7 @@ if not pred_vis.empty:
     )
 else:
     st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
+'''
+
+Path('/mnt/data/app.py').write_text(app_code, encoding='utf-8')
+print("Saved /mnt/data/app.py")
