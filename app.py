@@ -498,7 +498,6 @@ if not pred_vis.empty:
         "Fecha": pred_plot["Fecha"],
         "Día juliano": pred_plot["Día juliano"].astype(int),
         "Lluvia 7d (mm)": pred_plot["lluvia_7d_prev"].round(1),
-        "Nivel base": pred_plot["Nivel_base"],
         "Nivel final": pred_plot["Nivel de EMERREL"],
         "EMEAC (%)": emeac_ajust
     })
