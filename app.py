@@ -218,13 +218,23 @@ if fuente == "API + Histórico":
     with st.spinner("Descargando pronóstico..."):
         df_api = fetch_api_cached(api_url, token, st.session_state["reload_nonce"], compat)
 
-    df_api["Fecha"] = pd.to_datetime(df_api["Fecha"])
-    df_api = df_api.sort_values("Fecha")
-    dias_unicos = df_api["Fecha"].dt.normalize().unique()
-    df_api = df_api[df_api["Fecha"].dt.normalize().isin(dias_unicos[:8])]
-    if df_api.empty:
-        st.error("No se pudieron obtener datos del pronóstico.")
-        st.stop()
+    df_api["Fecha"] = pd.to_datetime(df_api["Fecha"], errors="coerce")
+    df_api = df_api.dropna(subset=["Fecha"]).sort_values("Fecha")
+
+    # (Opcional y recomendable) si la API trae varias filas por día, consolidamos por día calendario:
+    # - TMAX: máximo diario
+    # - TMIN: mínimo diario
+    # - Prec: suma diaria
+if {"TMAX", "TMIN", "Prec"}.issubset(df_api.columns):
+    df_api["Fecha"] = df_api["Fecha"].dt.normalize()
+    df_api = (df_api
+              .groupby("Fecha", as_index=False)
+              .agg({"TMAX":"max", "TMIN":"min", "Prec":"sum"}))
+
+if df_api.empty:
+    st.error("No se pudieron obtener datos del pronóstico.")
+    st.stop()
+
 
     HIST_LOCAL = st.secrets.get("HIST_LOCAL_PATH", "").strip()
     candidatos = [p for p in [HIST_LOCAL, "./historico.xlsx", "/mnt/data/historico.xlsx"] if p]
