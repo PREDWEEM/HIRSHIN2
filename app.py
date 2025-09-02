@@ -529,6 +529,4 @@ st.download_button(
     mime="text/csv"
 )
 
-else:
-    st.warning("No hay datos para construir la serie completa en 2025. Se muestran igualmente las fechas vacías.")
 
