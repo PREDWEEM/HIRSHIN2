@@ -1,4 +1,4 @@
-# app.py – HIRSHIN (excluye días “bajados por la regla” de resultados y gráficos)
+# app.py – HIRSHIN (muestra serie completa 1-feb → 1-oct 2025; NO excluye días por la regla)
 import os
 import io
 import json
@@ -28,6 +28,10 @@ except Exception:
     PLOTLY_OK = False
 
 st.set_page_config(page_title="PREDICCION EMERGENCIA AGRICOLA HIRSHIN", layout="wide")
+
+# ====================== VENTANA FIJA 2025 ======================
+FECHA_INICIO_FIJA = pd.Timestamp("2025-02-01")
+FECHA_FIN_FIJA    = pd.Timestamp("2025-10-01")
 
 # ====================== UMBRALES EMEAC (EDITABLES EN CÓDIGO) ======================
 EMEAC_MIN = 5     # Umbral mínimo por defecto (cambia aquí)
@@ -295,22 +299,10 @@ if fuente == "API + Histórico":
     df_prec_lluvia = df_all[["Fecha", "Prec"]].copy()
     df_prec_lluvia["Fecha"] = pd.to_datetime(df_prec_lluvia["Fecha"]).dt.normalize()
     df_prec_lluvia = df_prec_lluvia.groupby("Fecha", as_index=False)["Prec"].sum()
-    idx = pd.date_range(df_prec_lluvia["Fecha"].min(), df_prec_lluvia["Fecha"].max(), freq="D")
-    s = (df_prec_lluvia.set_index("Fecha")["Prec"].reindex(idx).fillna(0.0).astype(float))
+    idx_full_rain = pd.date_range(df_prec_lluvia["Fecha"].min(), df_prec_lluvia["Fecha"].max(), freq="D")
+    s = (df_prec_lluvia.set_index("Fecha")["Prec"].reindex(idx_full_rain).fillna(0.0).astype(float))
     lluvia_7d_prev = s.shift(1).rolling(window=LLUVIA_VENTANA_DIAS, min_periods=LLUVIA_VENTANA_DIAS).sum().fillna(0.0)
-    df_prec_lluvia = pd.DataFrame({"Fecha": idx, "lluvia_7d_prev": lluvia_7d_prev.values})
-
-    try:
-        start_check = pd.Timestamp(min_api_date.year, 2, 1)
-        end_check = pd.Timestamp(min_api_date.year, 10, 1)
-        rng = pd.date_range(start_check, end_check, freq="D")
-        faltan = set(rng.date) - set(pd.to_datetime(df_all["Fecha"]).dt.date)
-        if faltan:
-            st.warning(f"Fechas sin datos en el rango 1-feb → 1-oct: {len(faltan)} días (ej: {sorted(list(faltan))[:5]}...)")
-        else:
-            st.success("Continuidad OK: sin huecos entre 1-feb y 1-oct.")
-    except Exception:
-        pass
+    df_prec_lluvia = pd.DataFrame({"Fecha": idx_full_rain, "lluvia_7d_prev": lluvia_7d_prev.values})
 
     if df_all.empty:
         st.error("Fusión vacía (ni histórico válido ni API).")
@@ -361,66 +353,74 @@ fechas_excel = usar_fechas_de_input(input_df_raw, len(resultado))
 if fechas_excel is not None:
     resultado["Fecha"] = fechas_excel
 
-# ================= Rango 1-feb → 1-oct =================
+# ================= Rango 1-feb → 1-oct (ventana fija 2025) =================
+# Mantengo tu helper 'reiniciar_feb_oct' y luego fuerzo ventana fija con reindex:
 pred_vis = reiniciar_feb_oct(resultado[["Fecha", "EMERREL (0-1)"]].copy(), umbral_ajustable=umbral_usuario)
+pred_vis["Fecha"] = pd.to_datetime(pred_vis["Fecha"]).dt.normalize()
+
+# Reindex a ventana completa fija (incluye fechas sin datos como NaN)
+idx_fijo = pd.date_range(FECHA_INICIO_FIJA, FECHA_FIN_FIJA, freq="D")
+pred_full = pd.DataFrame(index=idx_fijo).reset_index().rename(columns={"index": "Fecha"})
+pred_full = pred_full.merge(pred_vis, on="Fecha", how="left")
 
 # Sello y fuente (sin exponer URL)
 st.caption(f"Fuente de datos: {source_label}")
 st.caption(f"Última actualización: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.caption(f"Umbral EMEAC usado: {umbral_usuario}" + (" (forzado desde código)" if usar_codigo else ""))
-st.caption(f"Regla lluvia 7d: {'ON' if APLICAR_REGLA_LLUVIA_7D else 'OFF'} · Corte {LLUVIA_CORTE_MM_7D} mm (previos a la fecha)")
 
-# ================= Gráficos + Tabla (rango 1-feb → 1-oct) =================
-if not pred_vis.empty:
-    pred_vis = pred_vis.copy()
-    pred_vis["Fecha"] = pd.to_datetime(pred_vis["Fecha"]).dt.normalize()
-    pred_vis["EMERREL_MA5_rango"] = pred_vis["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
+# ================= Gráficos + Tabla (SIEMPRE ventana completa) =================
+if not pred_full.empty:
+    # --- Lluvia 7d y niveles (NO se excluyen días; solo se marcan) ---
+    # Merge con la lluvia 7d previa si proviene de API+Hist
+    try:
+        pred_full = pred_full.merge(df_prec_lluvia, on="Fecha", how="left")
+    except Exception:
+        if "lluvia_7d_prev" not in pred_full.columns:
+            pred_full["lluvia_7d_prev"] = np.nan
 
-    # --- Nivel base (sin regla) y fusión de lluvia 7d ---
+    # Nivel base en función de EMERREL del modelo
     def _nivel_base(v):
+        if pd.isna(v):
+            return np.nan
         return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
-    pred_vis["Nivel_base"] = pred_vis["EMERREL (0-1)"].apply(_nivel_base)
+    pred_full["Nivel_base"] = pred_full["EMERREL (0-1)"].apply(_nivel_base)
 
-    pred_vis = pred_vis.merge(df_prec_lluvia, on="Fecha", how="left")
-    pred_vis["lluvia_7d_prev"] = pd.to_numeric(pred_vis["lluvia_7d_prev"], errors="coerce").fillna(0.0)
-
-    # --- Regla: Medio/Alto solo si lluvia_7d_prev ≥ corte (umbral inclusivo) ---
-    pred_vis["gated_down"] = (
+    # Aplicación de la regla para clasificar, pero SIN excluir días
+    pred_full["gated_down"] = (
         APLICAR_REGLA_LLUVIA_7D
-        & pred_vis["Nivel_base"].isin(["Medio", "Alto"])
-        & (pred_vis["lluvia_7d_prev"] < LLUVIA_CORTE_MM_7D)
+        & pred_full["Nivel_base"].isin(["Medio", "Alto"])
+        & (pred_full["lluvia_7d_prev"].fillna(-1e9) < LLUVIA_CORTE_MM_7D)
     )
-    pred_vis["Nivel de EMERREL"] = np.where(pred_vis["gated_down"], "Bajo", pred_vis["Nivel_base"])
+    pred_full["Nivel de EMERREL"] = np.where(pred_full["gated_down"], "Bajo", pred_full["Nivel_base"])
 
-    # === EXCLUIR de resultados y gráficos los días bajados por la regla ===
-    excluidos = int(pred_vis["gated_down"].sum())
-    pred_plot = pred_vis.loc[~pred_vis["gated_down"]].copy()
-
-    if pred_plot.empty:
-        st.warning("Todos los días del rango fueron excluidos por la regla de lluvia (≥10 mm en 7 días previos).")
-        st.stop()
-
-    # ---------- SERIES EMEAC (sobre el conjunto filtrado) ----------
-    emerrel_rango = pred_plot["EMERREL (0-1)"].to_numpy()
-    cumsum_rango = np.cumsum(emerrel_rango)
-    emeac_min_pct = np.clip(cumsum_rango / float(EMEAC_MAX) * 100.0, 0, 100)
-    emeac_max_pct = np.clip(cumsum_rango / float(EMEAC_MIN) * 100.0, 0, 100)
-    emeac_ajust   = np.clip(cumsum_rango / float(umbral_usuario) * 100.0, 0, 100)
-
-    st.caption(f"Se excluyeron {excluidos} día(s) por la regla de lluvia 7d (no alcanzaron ≥ {LLUVIA_CORTE_MM_7D} mm).")
+    # ---------- SERIES EMEAC (sobre la serie COMPLETA del modelo, sin filtrar) ----------
+    emerrel_series = pred_full["EMERREL (0-1)"].fillna(0.0).to_numpy()
+    cumsum_series = np.cumsum(emerrel_series)
+    emeac_min_pct = np.clip(cumsum_series / float(EMEAC_MAX) * 100.0, 0, 100)
+    emeac_max_pct = np.clip(cumsum_series / float(EMEAC_MIN) * 100.0, 0, 100)
+    emeac_ajust   = np.clip(cumsum_series / float(umbral_usuario) * 100.0, 0, 100)
 
     # === Plot con Plotly si está disponible ===
     if PLOTLY_OK:
         color_map = {"Bajo": "green", "Medio": "yellow", "Alto": "red"}
 
-        # ---------- Gráfico 1: EMERREL ----------
-        st.subheader("EMERGENCIA RELATIVA DIARIA - BORDENAVE")
+        # ---------- Gráfico 1: EMERREL (serie completa) ----------
+        st.subheader("EMERGENCIA RELATIVA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
         fig1 = go.Figure()
+
+        # Barras con color por Nivel_base y opacidad menor cuando aplica la regla
+        bar_colors = pred_full["Nivel_base"].map(color_map).fillna("lightgray").tolist()
+        bar_opacity = np.where(pred_full["gated_down"], 0.45, 0.9).tolist()
+
         fig1.add_bar(
-            x=pred_plot["Fecha"],
-            y=pred_plot["EMERREL (0-1)"],
-            marker=dict(color=pred_plot["Nivel_base"].map(color_map).tolist()),
-            customdata=np.stack([pred_plot["Nivel_base"], pred_plot["Nivel de EMERREL"], pred_plot["lluvia_7d_prev"]], axis=-1),
+            x=pred_full["Fecha"],
+            y=pred_full["EMERREL (0-1)"],
+            marker=dict(color=bar_colors, opacity=bar_opacity),
+            customdata=np.stack([
+                pred_full["Nivel_base"].fillna("s/d"),
+                pred_full["Nivel de EMERREL"].fillna("s/d"),
+                pred_full["lluvia_7d_prev"].fillna(np.nan)
+            ], axis=-1),
             hovertemplate=(
                 "Fecha: %{x|%d-%b-%Y}"
                 "<br>EMERREL: %{y:.3f}"
@@ -431,83 +431,102 @@ if not pred_vis.empty:
             ),
             name="EMERREL (0-1)",
         )
-        # Línea MA5 (recalcular sobre filtrado)
-        pred_plot["EMERREL_MA5_rango"] = pred_plot["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
+
+        # Línea MA5 sobre la serie completa
+        pred_full["EMERREL_MA5"] = pred_full["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
         fig1.add_trace(go.Scatter(
-            x=pred_plot["Fecha"], y=pred_plot["EMERREL_MA5_rango"],
+            x=pred_full["Fecha"],
+            y=pred_full["EMERREL_MA5"],
             mode="lines", name="Media móvil 5 días",
             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>MA5: %{y:.3f}<extra></extra>"
         ))
+        # Área bajo MA5
         fig1.add_trace(go.Scatter(
-            x=pred_plot["Fecha"], y=pred_plot["EMERREL_MA5_rango"],
+            x=pred_full["Fecha"], y=pred_full["EMERREL_MA5"],
             mode="lines", line=dict(width=0),
-            fill="tozeroy", fillcolor="rgba(135, 206, 250, 0.3)",
+            fill="tozeroy", fillcolor="rgba(135, 206, 250, 0.30)",
             name="Área MA5", hoverinfo="skip", showlegend=False
         ))
+        # Umbrales de referencia
         y_low, y_med = 0.2, 0.4
-        x0, x1 = pred_plot["Fecha"].min(), pred_plot["Fecha"].max()
+        x0, x1 = FECHA_INICIO_FIJA, FECHA_FIN_FIJA
         fig1.add_trace(go.Scatter(x=[x0, x1], y=[y_low, y_low], mode="lines", line=dict(color="green", dash="dot"), name=f"Nivel Bajo (≤ {y_low:.2f})", hoverinfo="skip"))
         fig1.add_trace(go.Scatter(x=[x0, x1], y=[y_med, y_med], mode="lines", line=dict(color="orange", dash="dot"), name=f"Nivel Medio (≤ {y_med:.2f})", hoverinfo="skip"))
         fig1.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(color="red", dash="dot"), name=f"Nivel Alto (> {y_med:.2f})", hoverinfo="skip"))
+
+        fig1.update_xaxes(range=[FECHA_INICIO_FIJA, FECHA_FIN_FIJA])
         fig1.update_layout(xaxis_title="Fecha", yaxis_title="EMERREL (0-1)", hovermode="x unified", legend_title="Referencias", height=650)
         st.plotly_chart(fig1, use_container_width=True, theme="streamlit")
 
-        # ---------- Gráfico 2: EMEAC ----------
-        st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE")
+        # ---------- Gráfico 2: EMEAC (serie completa) ----------
+        st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
         st.markdown(f"**Umbrales:** Min={EMEAC_MIN} · Max={EMEAC_MAX} · Ajustable={umbral_usuario}")
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=pred_plot["Fecha"], y=emeac_min_pct, mode="lines", line=dict(width=0), name=f"Mínimo (umbral {EMEAC_MAX})",
+        fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_min_pct, mode="lines", line=dict(width=0), name=f"Mínimo (umbral {EMEAC_MAX})",
                                   hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Mínimo: %{y:.1f}%<extra></extra>"))
-        fig2.add_trace(go.Scatter(x=pred_plot["Fecha"], y=emeac_max_pct, mode="lines", line=dict(width=0), fill="tonexty", name=f"Máximo (umbral {EMEAC_MIN})",
+        fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_max_pct, mode="lines", line=dict(width=0), fill="tonexty", name=f"Máximo (umbral {EMEAC_MIN})",
                                   hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Máximo: %{y:.1f}%<extra></extra>"))
-        fig2.add_trace(go.Scatter(x=pred_plot["Fecha"], y=emeac_ajust, mode="lines", name=f"Ajustable ({umbral_usuario})", line=dict(width=2.5),
+        fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_ajust, mode="lines", name=f"Ajustable ({umbral_usuario})", line=dict(width=2.5),
                                   hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Ajustable: %{y:.1f}%<extra></extra>"))
-        fig2.add_trace(go.Scatter(x=pred_plot["Fecha"], y=emeac_min_pct, mode="lines", name=f"Mínimo (umbral {EMEAC_MAX})", line=dict(dash="dash", width=1.5),
+        fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_min_pct, mode="lines", name=f"Mínimo (umbral {EMEAC_MAX})", line=dict(dash="dash", width=1.5),
                                   hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Mínimo: %{y:.1f}%<extra></extra>"))
-        fig2.add_trace(go.Scatter(x=pred_plot["Fecha"], y=emeac_max_pct, mode="lines", name=f"Máximo (umbral {EMEAC_MIN})", line=dict(dash="dash", width=1.5),
+        fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_max_pct, mode="lines", name=f"Máximo (umbral {EMEAC_MIN})", line=dict(dash="dash", width=1.5),
                                   hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Máximo: %{y:.1f}%<extra></extra>"))
         for nivel in [25, 50, 75, 90]:
             fig2.add_hline(y=nivel, line_dash="dash", opacity=0.6, annotation_text=f"{nivel}%")
+        fig2.update_xaxes(range=[FECHA_INICIO_FIJA, FECHA_FIN_FIJA])
         fig2.update_layout(xaxis_title="Fecha", yaxis_title="EMEAC (%)", hovermode="x unified", legend_title="Referencias", yaxis=dict(range=[0, 100]), height=600)
         st.plotly_chart(fig2, use_container_width=True, theme="streamlit")
 
     else:
         # === Fallback Matplotlib ===
         color_map = {"Bajo": "green", "Medio": "yellow", "Alto": "red"}
+        # EMERREL
+        st.subheader("EMERGENCIA RELATIVA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
         fig1, ax1 = plt.subplots(figsize=(12, 4))
-        ax1.fill_between(pred_plot["Fecha"], 0, pred_plot["EMERREL (0-1)"].rolling(5, min_periods=1).mean(), color="skyblue", alpha=0.3, zorder=0)
-        ax1.bar(pred_plot["Fecha"], pred_plot["EMERREL (0-1)"], color=pred_plot["Nivel_base"].map(color_map))
-        line_ma5 = ax1.plot(pred_plot["Fecha"], pred_plot["EMERREL (0-1)"].rolling(5, min_periods=1).mean(), linewidth=2.2, label="Media móvil 5 días")[0]
-        ax1.set_ylabel("EMERREL (0-1)"); ax1.set_title("EMERGENCIA RELATIVA DIARIA"); ax1.tick_params(axis='x', rotation=45)
-        ax1.legend(handles=[Patch(facecolor=color_map[k], label=k) for k in ["Bajo","Medio","Alto"]] + [line_ma5], loc="upper right")
+        ma5 = pred_full["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
+        ax1.fill_between(pred_full["Fecha"], 0, ma5, color="skyblue", alpha=0.3, zorder=0)
+        bars_color = pred_full["Nivel_base"].map(color_map).fillna("lightgray")
+        bars_alpha = np.where(pred_full["gated_down"], 0.45, 0.9)
+        ax1.bar(pred_full["Fecha"], pred_full["EMERREL (0-1)"], color=bars_color, alpha=bars_alpha)
+        ax1.plot(pred_full["Fecha"], ma5, linewidth=2.2, label="Media móvil 5 días")
+        ax1.set_xlim(FECHA_INICIO_FIJA, FECHA_FIN_FIJA)
+        ax1.set_ylabel("EMERREL (0-1)")
+        ax1.legend(handles=[Patch(facecolor=color_map.get(k, "lightgray"), label=k) for k in ["Bajo","Medio","Alto"]], loc="upper right")
         ax1.grid(True); st.pyplot(fig1); plt.close(fig1)
 
-        st.subheader("EMERGENCIA ACUMULADA DIARIA")
-        st.markdown(f"**Umbrales:** Min={EMEAC_MIN} · Max={EMEAC_MAX} · Ajustable={umbral_usuario}")
+        # EMEAC
+        st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
         fig2, ax2 = plt.subplots(figsize=(12, 5))
-        ax2.plot(pred_plot["Fecha"], emeac_ajust,   label=f"Ajustable ({umbral_usuario})", linewidth=2)
-        ax2.plot(pred_plot["Fecha"], emeac_min_pct, label=f"Mínimo (umbral {EMEAC_MAX})", linestyle="--", linewidth=2)
-        ax2.plot(pred_plot["Fecha"], emeac_max_pct, label=f"Máximo (umbral {EMEAC_MIN})", linestyle="--", linewidth=2)
-        ax2.fill_between(pred_plot["Fecha"], emeac_min_pct, emeac_max_pct, alpha=0.3, label="Área entre Mín y Máx")
+        ax2.plot(pred_full["Fecha"], emeac_ajust,   label=f"Ajustable ({umbral_usuario})", linewidth=2)
+        ax2.plot(pred_full["Fecha"], emeac_min_pct, label=f"Mínimo (umbral {EMEAC_MAX})", linestyle="--", linewidth=2)
+        ax2.plot(pred_full["Fecha"], emeac_max_pct, label=f"Máximo (umbral {EMEAC_MIN})", linestyle="--", linewidth=2)
+        ax2.fill_between(pred_full["Fecha"], emeac_min_pct, emeac_max_pct, alpha=0.3, label="Área entre Mín y Máx")
+        ax2.set_xlim(FECHA_INICIO_FIJA, FECHA_FIN_FIJA)
         ax2.set_ylabel("EMEAC (%)"); ax2.set_ylim(0, 105); ax2.legend(); ax2.grid(True)
         st.pyplot(fig2); plt.close(fig2)
 
-    # --- Tabla (conjunto filtrado, sin días “X”) ---
-    pred_plot["Día juliano"] = pd.to_datetime(pred_plot["Fecha"]).dt.dayofyear
+    # --- Tabla (VENTANA COMPLETA; sin excluir días) ---
+    pred_full["Día juliano"] = pred_full["Fecha"].dt.dayofyear
     tabla_display = pd.DataFrame({
-        "Fecha": pred_plot["Fecha"],
-        "Día juliano": pred_plot["Día juliano"].astype(int),
-        "Lluvia 7d (mm)": pred_plot["lluvia_7d_prev"].round(1),
-        "Nivel final": pred_plot["Nivel de EMERREL"],
+        "Fecha": pred_full["Fecha"],
+        "Día juliano": pred_full["Día juliano"].astype(int),
+        "Lluvia 7d (mm)": pred_full["lluvia_7d_prev"].round(1),
+        "Aplicó regla (↓)": pred_full["gated_down"].map({True: "Sí", False: "No"}).fillna("s/d"),
+        "Nivel base": pred_full["Nivel_base"],
+        "Nivel final": pred_full["Nivel de EMERREL"],
+        "EMERREL (0-1)": pred_full["EMERREL (0-1)"],
         "EMEAC (%)": emeac_ajust
     })
-    tabla_csv = tabla_display.copy()
-    st.subheader("Tabla de Resultados (rango 1-feb → 1-oct, días 'bajados' excluidos)")
+
+    st.subheader("Tabla de Resultados — Serie completa (1-feb → 1-oct 2025)")
     st.dataframe(tabla_display, use_container_width=True)
-    csv_rango = tabla_csv.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Descargar tabla (rango) en CSV",
-                       data=csv_rango,
-                       file_name=f"tabla_rango_filtrada_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
+
+    csv_full = tabla_display.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Descargar tabla completa (1-feb → 1-oct 2025) en CSV",
+                       data=csv_full,
+                       file_name=f"tabla_completa_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
                        mime="text/csv")
 else:
-    st.warning("No hay datos en el rango 1-feb → 1-oct para el año detectado.")
+    st.warning("No hay datos para construir la serie completa en 2025. Se muestran igualmente las fechas vacías.")
+
