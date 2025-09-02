@@ -506,27 +506,29 @@ if not pred_full.empty:
         ax2.set_ylabel("EMEAC (%)"); ax2.set_ylim(0, 105); ax2.legend(); ax2.grid(True)
         st.pyplot(fig2); plt.close(fig2)
 
-    # --- Tabla (VENTANA COMPLETA; sin excluir días) ---
-    pred_full["Día juliano"] = pred_full["Fecha"].dt.dayofyear
-    tabla_display = pd.DataFrame({
-        "Fecha": pred_full["Fecha"],
-        "Día juliano": pred_full["Día juliano"].astype(int),
-        "Lluvia 7d (mm)": pred_full["lluvia_7d_prev"].round(1),
-        "Aplicó regla (↓)": pred_full["gated_down"].map({True: "Sí", False: "No"}).fillna("s/d"),
-        "Nivel base": pred_full["Nivel_base"],
-        "Nivel final": pred_full["Nivel de EMERREL"],
-        "EMERREL (0-1)": pred_full["EMERREL (0-1)"],
-        "EMEAC (%)": emeac_ajust
-    })
+   # --- Tabla (VENTANA COMPLETA; sin excluir días) ---
+pred_full["Día juliano"] = pred_full["Fecha"].dt.dayofyear
 
-    st.subheader("Tabla de Resultados — Serie completa (1-feb → 1-oct 2025)")
-    st.dataframe(tabla_display, use_container_width=True)
+tabla_display = pd.DataFrame({
+    "Fecha": pred_full["Fecha"],
+    "Día juliano": pred_full["Día juliano"].astype(int),
+    "Lluvia 7d (mm)": pred_full["lluvia_7d_prev"].round(1),
+    # columnas removidas: "EMERREL (0-1)", "Aplicó regla (↓)", "Nivel base"
+    "Nivel final": pred_full["Nivel de EMERREL"],
+    "EMEAC (%)": np.clip(np.cumsum(pred_full["EMERREL (0-1)"].fillna(0.0).to_numpy()) / float(umbral_usuario) * 100.0, 0, 100)
+})
 
-    csv_full = tabla_display.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Descargar tabla completa (1-feb → 1-oct 2025) en CSV",
-                       data=csv_full,
-                       file_name=f"tabla_completa_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
-                       mime="text/csv")
+st.subheader("Tabla de Resultados — Serie completa (1-feb → 1-oct 2025)")
+st.dataframe(tabla_display, use_container_width=True)
+
+csv_full = tabla_display.to_csv(index=False).encode("utf-8")
+st.download_button(
+    "⬇️ Descargar tabla completa (1-feb → 1-oct 2025) en CSV",
+    data=csv_full,
+    file_name=f"tabla_completa_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
+    mime="text/csv"
+)
+
 else:
     st.warning("No hay datos para construir la serie completa en 2025. Se muestran igualmente las fechas vacías.")
 
