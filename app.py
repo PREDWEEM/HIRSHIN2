@@ -498,12 +498,19 @@ else:
 
 # ================= Tabla — Serie completa (sin EMERREL/Aplicó regla/Nivel base) =================
 pred_full["Día juliano"] = pred_full["Fecha"].dt.dayofyear
+
+# Mapeo de iconos por nivel final
+MAP_NIVEL_ICONO = {"Bajo": "🟢 Bajo", "Medio": "🟠 Medio", "Alto": "🔴 Alto"}
+
 tabla_display = pd.DataFrame({
     "Fecha": pred_full["Fecha"],
     "Día juliano": pred_full["Día juliano"].astype(int),
     "Lluvia 7d (mm)": pred_full["lluvia_7d_prev"].round(1),
-    "Nivel final": pred_full["Nivel de EMERREL"],
-    "EMEAC (%)": emeac_ajust
+    "Nivel final": pred_full["Nivel de EMERREL"].map(MAP_NIVEL_ICONO).fillna("⚪ s/d"),
+    "EMEAC (%)": np.clip(
+        np.cumsum(pred_full["EMERREL (0-1)"].fillna(0.0).to_numpy()) / float(umbral_usuario) * 100.0,
+        0, 100
+    )
 })
 
 st.subheader("Tabla de Resultados — Serie completa (1-feb → 1-oct 2025)")
@@ -516,3 +523,4 @@ st.download_button(
     file_name=f"tabla_completa_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
     mime="text/csv"
 )
+
