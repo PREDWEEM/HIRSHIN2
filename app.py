@@ -193,12 +193,56 @@ def try_commit_history_csv(df_hist_nuevo: pd.DataFrame) -> bool:
     _github_put_file(repo, path, branch, csv_bytes, msg, sha=sha_actual, committer=committer)
     return True
 
+# >>> ADD: Persistencia local mínima y robusta (CSV)
+LOCAL_HISTORY_PATH = st.secrets.get("LOCAL_HISTORY_PATH", "meteo_history_local.csv")
+
+def _load_local_history(path: str, api_year: int) -> pd.DataFrame:
+    try:
+        if not os.path.exists(path):
+            return pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
+        df = pd.read_csv(path)
+        df = _normalize_hist_like(df, api_year=api_year)
+        if "Fecha" not in df.columns:
+            return pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
+        return (df.dropna(subset=["Fecha"])
+                  .sort_values("Fecha")
+                  .drop_duplicates(subset=["Fecha"], keep="last")
+                  .reset_index(drop=True))
+    except Exception as e:
+        st.warning(f"No pude leer el histórico local ({path}): {e}")
+        return pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"])
+
+def _save_local_history(path: str, df_hist: pd.DataFrame) -> None:
+    try:
+        cols = ["Fecha","Julian_days","TMAX","TMIN","Prec"]
+        csv_df = df_hist[cols].copy() if set(cols).issubset(df_hist.columns) else df_hist.copy()
+        csv_df.to_csv(path, index=False, date_format="%Y-%m-%d")
+    except Exception as e:
+        st.warning(f"No pude guardar el histórico local ({path}): {e}")
+
+def _union_histories(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
+    if df_a is None or df_a.empty:
+        return (df_b.copy() if df_b is not None else
+                pd.DataFrame(columns=["Fecha","Julian_days","TMAX","TMIN","Prec"]))
+    if df_b is None or df_b.empty:
+        return df_a.copy()
+    merged = (pd.concat([df_a, df_b], ignore_index=True)
+                .dropna(subset=["Fecha"])
+                .sort_values("Fecha")
+                .drop_duplicates(subset=["Fecha"], keep="last")
+                .reset_index(drop=True))
+    merged["Julian_days"] = pd.to_datetime(merged["Fecha"]).dt.dayofyear
+    for c in ["TMAX","TMIN","Prec"]:
+        if c in merged.columns:
+            merged[c] = pd.to_numeric(merged[c], errors="coerce")
+    return merged
+
 # ================= Sidebar =================
 st.sidebar.header("Fuente de datos")
 fuente = st.sidebar.radio("Elegí cómo cargar datos", options=["API + Histórico", "Subir Excel"], index=0)
 usar_codigo = st.sidebar.checkbox(label=" ", value=FORZAR_AJUSTABLE_DESDE_CODIGO, key="chk_usar_codigo", label_visibility="collapsed")
 umbral_slider = st.sidebar.slider("Seleccione el umbral EMEAC (Ajustable)", min_value=int(EMEAC_MIN), max_value=int(EMEAC_MAX), value=int(np.clip(EMEAC_AJUSTABLE_DEF, EMEAC_MIN, EMEAC_MAX)))
-umbral_usuario = int(np.clip(EMEAC_AJUSTABLE_DEF if usar_codigo else umbral_slider, EMEAC_MIN, EMEAC_MAX))
+umbral_usuario = int(np.clip(EMEAC_AJUSTABLE_DESDE_CODIGO if usar_codigo else umbral_slider, EMEAC_MIN, EMEAC_MAX)) if 'EMEAC_AJUSTABLE_DESDE_CODIGO' in globals() else int(np.clip(EMEAC_AJUSTABLE_DEF if usar_codigo else umbral_slider, EMEAC_MIN, EMEAC_MAX))
 
 # ================= Flujo principal =================
 st.title("PREDICCION EMERGENCIA AGRICOLA HIRSHIN")
@@ -243,6 +287,17 @@ if fuente == "API + Histórico":
                 break
             except Exception as e:
                 st.warning(f"No pude leer el histórico local {path}: {e}")
+
+    # >>> ADD: si no encontré .xlsx locales, intento el histórico local CSV persistente
+    if df_hist_publico.empty:
+        try:
+            api_year_try = int(pd.to_datetime(df_api["Fecha"]).min().year)
+        except Exception:
+            api_year_try = pd.Timestamp.now().year
+        df_hist_publico = _load_local_history(LOCAL_HISTORY_PATH, api_year=api_year_try)
+        if not df_hist_publico.empty:
+            hist_source_desc = f"Hist (local CSV: {LOCAL_HISTORY_PATH})"
+
     if df_hist_publico.empty:
         try:
             if _have_gh_secrets():
@@ -272,7 +327,19 @@ if fuente == "API + Histórico":
         except Exception as e:
             st.warning(f"No se pudo comitear el histórico al repo: {e}")
 
-    df_hist_usable = df_hist_actualizado if not df_hist_actualizado.empty else df_hist_publico
+    # >>> ADD: persistencia local y unión con lo existente en disco
+    try:
+        api_year_save = int(pd.to_datetime(df_api["Fecha"]).min().year)
+    except Exception:
+        api_year_save = pd.Timestamp.now().year
+
+    df_local_prev = _load_local_history(LOCAL_HISTORY_PATH, api_year=api_year_save)
+    df_hist_union = _union_histories(df_local_prev, df_hist_actualizado if not df_hist_actualizado.empty else df_hist_publico)
+    _save_local_history(LOCAL_HISTORY_PATH, df_hist_union)
+
+    # >>> REPLACE: preferir el union consolidado local (si existe)
+    df_hist_usable = df_hist_union if ('df_hist_union' in locals() and not df_hist_union.empty) \
+                     else (df_hist_actualizado if not df_hist_actualizado.empty else df_hist_publico)
 
     # --- Fusión ordenada ---
     min_api_date = pd.to_datetime(df_api["Fecha"].min()).normalize()
@@ -371,6 +438,7 @@ pred_full = pred_full.merge(pred_vis, on="Fecha", how="left")
 
 # Sello y fuente (sin exponer URLs)
 st.caption(f"Fuente de datos: {source_label}")
+st.caption(f"Hist persistente local: {LOCAL_HISTORY_PATH}")
 st.caption(f"Última actualización: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.caption(f"Umbral EMEAC usado: {umbral_usuario}" + (" (forzado desde código)" if usar_codigo else ""))
 
@@ -523,4 +591,3 @@ st.download_button(
     file_name=f"tabla_completa_{pd.Timestamp.now().strftime('%Y-%m-%d_%H%M')}.csv",
     mime="text/csv"
 )
-
