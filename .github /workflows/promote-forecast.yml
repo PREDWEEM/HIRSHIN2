@@ -1,31 +1,37 @@
-name: Promote Forecast
+name: Promote forecast into history
 
 on:
-  workflow_dispatch:    # 👈 habilita "Run workflow" manual en GitHub Actions
-  push:                 # 👈 opcional: se dispara también cuando hay push en main
-    branches:
-      - main
+  schedule:
+    # Corre todos los días a las 12:00 UTC (09:00 hora Argentina)
+    - cron: "0 12 * * *"
+  workflow_dispatch:  # Permite correrlo manualmente desde GitHub
 
 jobs:
   promote:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas requests openpyxl python-dateutil
 
-      - name: Run forecast promotion
+      - name: Run promote_forecast.py
+        run: python promote_forecast.py
+
+      - name: Commit and push changes
         run: |
-          echo "Promoting forecast..."
-          python scripts/promote_forecast.py
-
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/historico.csv || true
+          git add data/historico.xlsx || true
+          git commit -m "Auto-update historico - $(date -u +"%Y-%m-%d %H:%M UTC")" || echo "No changes to commit"
+          git push
