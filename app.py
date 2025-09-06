@@ -515,7 +515,7 @@ if PLOTLY_OK:
     # Relleno tricolor INTERNO bajo MA5 (0→0.2 verde, 0.2→0.4 amarillo, 0.4→MA5 rojo)
     x = pred_full["Fecha"]
     ma = pred_full["EMERREL_MA5"].fillna(0.0).clip(lower=0.0).to_numpy()
-    y_low, y_med = 0.2, 0.4
+    y_low, y_med = 0.1, 0.3
 
     y0 = np.zeros_like(ma)
     y1 = np.minimum(ma, y_low)   # verde
