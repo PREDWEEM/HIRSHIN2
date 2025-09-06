@@ -522,7 +522,7 @@ if PLOTLY_OK:
     y2 = np.minimum(ma, y_med)   # amarillo
     y3 = ma                      # rojo
 
-    ALPHA = 0.28  # opacidad suave (ajustable 0.20–0.35)
+    ALPHA = 0.70  # opacidad suave (ajustable 0.20–0.35)
     GREEN_RGBA  = rgba(HEX_GREEN,  ALPHA)
     YELLOW_RGBA = rgba(HEX_YELLOW, ALPHA)
     RED_RGBA    = rgba(HEX_RED,    ALPHA)
