@@ -589,7 +589,7 @@ else:
     # MA5
     ma5 = pred_full["EMERREL (0-1)"].rolling(5, min_periods=1).mean().fillna(0.0).clip(lower=0.0).to_numpy()
     x = pred_full["Fecha"].to_numpy()
-    y_low, y_med = 0.2, 0.4
+    y_low, y_med = 0.1, 0.3
     y0 = np.zeros_like(ma5)
     y1 = np.minimum(ma5, y_low)  # verde
     y2 = np.minimum(ma5, y_med)  # amarillo
