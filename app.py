@@ -366,7 +366,7 @@ if fuente == "API + Histórico":
     df_all["Fecha"] = pd.to_datetime(df_all["Fecha"], errors="coerce")
     df_all = df_all.dropna(subset=["Fecha"]).sort_values("Fecha")
     df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
-    df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear
+    df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear()
 
     # === Lluvia acumulada 7 días previos (excluye día actual) – calendario ===
     df_prec_lluvia = df_all[["Fecha", "Prec"]].copy()
@@ -469,15 +469,24 @@ emeac_min_pct = np.clip(cumsum_series / float(EMEAC_MAX) * 100.0, 0, 100)
 emeac_max_pct = np.clip(cumsum_series / float(EMEAC_MIN) * 100.0, 0, 100)
 emeac_ajust   = np.clip(cumsum_series / float(umbral_usuario) * 100.0, 0, 100)
 
+# ================= Colores globales consistentes =================
+HEX_GREEN  = "#00A651"
+HEX_YELLOW = "#FFC000"
+HEX_RED    = "#E53935"
+def rgba(hex_color: str, alpha: float) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
 # ================= Gráficos (Serie completa 1-feb → 1-oct 2025) =================
 if PLOTLY_OK:
-    color_map = {"Bajo": "green", "Medio": "yellow", "Alto": "red"}
-
     # --- Gráfico 1: EMERREL ---
     st.subheader("EMERGENCIA RELATIVA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
     fig1 = go.Figure()
 
-    bar_colors = pred_full["Nivel_base"].map(color_map).fillna("lightgray").tolist()
+    # Colores de barras por nivel base
+    color_map_hex = {"Bajo": HEX_GREEN, "Medio": HEX_YELLOW, "Alto": HEX_RED}
+    bar_colors = pred_full["Nivel_base"].map(color_map_hex).fillna("lightgray").tolist()
     bar_opacity = np.where(pred_full["gated_down"], 0.45, 0.9).tolist()
 
     fig1.add_bar(
@@ -500,59 +509,117 @@ if PLOTLY_OK:
         name="EMERREL (0-1)",
     )
 
+    # Media móvil 5 días
     pred_full["EMERREL_MA5"] = pred_full["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
+
+    # Relleno tricolor INTERNO bajo MA5 (0→0.2 verde, 0.2→0.4 amarillo, 0.4→MA5 rojo)
+    x = pred_full["Fecha"]
+    ma = pred_full["EMERREL_MA5"].fillna(0.0).clip(lower=0.0).to_numpy()
+    y_low, y_med = 0.2, 0.4
+
+    y0 = np.zeros_like(ma)
+    y1 = np.minimum(ma, y_low)   # verde
+    y2 = np.minimum(ma, y_med)   # amarillo
+    y3 = ma                      # rojo
+
+    ALPHA = 0.28  # opacidad suave (ajustable 0.20–0.35)
+    GREEN_RGBA  = rgba(HEX_GREEN,  ALPHA)
+    YELLOW_RGBA = rgba(HEX_YELLOW, ALPHA)
+    RED_RGBA    = rgba(HEX_RED,    ALPHA)
+
+    # Baselines + bandas
+    fig1.add_trace(go.Scatter(x=x, y=y0, mode="lines",
+                              line=dict(width=0), hoverinfo="skip", showlegend=False))
+    fig1.add_trace(go.Scatter(x=x, y=y1, mode="lines",
+                              line=dict(width=0), fill="tonexty", fillcolor=GREEN_RGBA,
+                              hoverinfo="skip", showlegend=False, name="Zona baja (verde)"))
+    fig1.add_trace(go.Scatter(x=x, y=y1, mode="lines",
+                              line=dict(width=0), hoverinfo="skip", showlegend=False))
+    fig1.add_trace(go.Scatter(x=x, y=y2, mode="lines",
+                              line=dict(width=0), fill="tonexty", fillcolor=YELLOW_RGBA,
+                              hoverinfo="skip", showlegend=False, name="Zona media (amarillo)"))
+    fig1.add_trace(go.Scatter(x=x, y=y2, mode="lines",
+                              line=dict(width=0), hoverinfo="skip", showlegend=False))
+    fig1.add_trace(go.Scatter(x=x, y=y3, mode="lines",
+                              line=dict(width=0), fill="tonexty", fillcolor=RED_RGBA,
+                              hoverinfo="skip", showlegend=False, name="Zona alta (rojo)"))
+
+    # Línea de MA5
     fig1.add_trace(go.Scatter(
         x=pred_full["Fecha"],
         y=pred_full["EMERREL_MA5"],
         mode="lines", name="Media móvil 5 días",
         hovertemplate="Fecha: %{x|%d-%b-%Y}<br>MA5: %{y:.3f}<extra></extra>"
     ))
-    fig1.add_trace(go.Scatter(
-        x=pred_full["Fecha"], y=pred_full["EMERREL_MA5"],
-        mode="lines", line=dict(width=0),
-        fill="tozeroy", fillcolor="rgba(135, 206, 250, 0.30)",
-        name="Área MA5", hoverinfo="skip", showlegend=False
-    ))
 
-    y_low, y_med = 0.2, 0.4
+    # Líneas de referencia
     fig1.add_hline(y=y_low, line_dash="dot", annotation_text=f"Bajo (≤ {y_low:.2f})")
     fig1.add_hline(y=y_med, line_dash="dot", annotation_text=f"Medio (≤ {y_med:.2f})")
+
     fig1.update_xaxes(range=[FECHA_INICIO_FIJA, FECHA_FIN_FIJA])
-    fig1.update_layout(xaxis_title="Fecha", yaxis_title="EMERREL (0-1)", hovermode="x unified", legend_title="Referencias", height=650)
+    fig1.update_layout(xaxis_title="Fecha", yaxis_title="EMERREL (0-1)", hovermode="x unified",
+                       legend_title="Referencias", height=650)
     st.plotly_chart(fig1, use_container_width=True, theme="streamlit")
 
     # --- Gráfico 2: EMEAC ---
     st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
     st.markdown(f"**Umbrales:** Min={EMEAC_MIN} · Max={EMEAC_MAX} · Ajustable={umbral_usuario}")
     fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_min_pct, mode="lines", line=dict(width=0), name=f"Mínimo (umbral {EMEAC_MAX})",
+    fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_min_pct, mode="lines", line=dict(width=0),
+                              name=f"Mínimo (umbral {EMEAC_MAX})",
                               hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Mínimo: %{y:.1f}%<extra></extra>"))
-    fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_max_pct, mode="lines", line=dict(width=0), fill="tonexty", name=f"Máximo (umbral {EMEAC_MIN})",
+    fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_max_pct, mode="lines", line=dict(width=0),
+                              fill="tonexty", name=f"Máximo (umbral {EMEAC_MIN})",
                               hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Máximo: %{y:.1f}%<extra></extra>"))
-    fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_ajust, mode="lines", name=f"Ajustable ({umbral_usuario})", line=dict(width=2.5),
+    fig2.add_trace(go.Scatter(x=pred_full["Fecha"], y=emeac_ajust, mode="lines",
+                              name=f"Ajustable ({umbral_usuario})", line=dict(width=2.5),
                               hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Ajustable: %{y:.1f}%<extra></extra>"))
     for nivel in [25, 50, 75, 90]:
         fig2.add_hline(y=nivel, line_dash="dash", opacity=0.6, annotation_text=f"{nivel}%")
     fig2.update_xaxes(range=[FECHA_INICIO_FIJA, FECHA_FIN_FIJA])
-    fig2.update_layout(xaxis_title="Fecha", yaxis_title="EMEAC (%)", hovermode="x unified", legend_title="Referencias", yaxis=dict(range=[0, 100]), height=600)
+    fig2.update_layout(xaxis_title="Fecha", yaxis_title="EMEAC (%)", hovermode="x unified",
+                       legend_title="Referencias", yaxis=dict(range=[0, 100]), height=600)
     st.plotly_chart(fig2, use_container_width=True, theme="streamlit")
 
 else:
     # === Fallback Matplotlib ===
-    color_map = {"Bajo": "green", "Medio": "yellow", "Alto": "red"}
-
     st.subheader("EMERGENCIA RELATIVA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
     fig1, ax1 = plt.subplots(figsize=(12, 4))
-    ma5 = pred_full["EMERREL (0-1)"].rolling(5, min_periods=1).mean()
-    ax1.fill_between(pred_full["Fecha"], 0, ma5, color="skyblue", alpha=0.3, zorder=0)
-    bars_color = pred_full["Nivel_base"].map(color_map).fillna("lightgray")
+
+    # MA5
+    ma5 = pred_full["EMERREL (0-1)"].rolling(5, min_periods=1).mean().fillna(0.0).clip(lower=0.0).to_numpy()
+    x = pred_full["Fecha"].to_numpy()
+    y_low, y_med = 0.2, 0.4
+    y0 = np.zeros_like(ma5)
+    y1 = np.minimum(ma5, y_low)  # verde
+    y2 = np.minimum(ma5, y_med)  # amarillo
+    y3 = ma5                     # rojo
+
+    ALPHA_MPL = 0.28
+    # Relleno tricolor interno
+    ax1.fill_between(x, y0, y1, color=HEX_GREEN,  alpha=ALPHA_MPL, zorder=0, label="_nolegend_")
+    ax1.fill_between(x, y1, y2, color=HEX_YELLOW, alpha=ALPHA_MPL, zorder=0, label="_nolegend_")
+    ax1.fill_between(x, y2, y3, color=HEX_RED,    alpha=ALPHA_MPL, zorder=0, label="_nolegend_")
+
+    # Barras con la misma paleta
+    color_map_hex = {"Bajo": HEX_GREEN, "Medio": HEX_YELLOW, "Alto": HEX_RED}
+    bars_color = pred_full["Nivel_base"].map(color_map_hex).fillna("lightgray")
     bars_alpha = np.where(pred_full["gated_down"], 0.45, 0.9)
-    ax1.bar(pred_full["Fecha"], pred_full["EMERREL (0-1)"], color=bars_color, alpha=bars_alpha)
-    ax1.plot(pred_full["Fecha"], ma5, linewidth=2.2, label="Media móvil 5 días")
+    ax1.bar(x, pred_full["EMERREL (0-1)"], color=bars_color, alpha=bars_alpha, width=0.9)
+
+    # Línea MA5
+    ax1.plot(x, ma5, linewidth=2.2, color="black", label="Media móvil 5 días")
+
+    # Líneas de referencia
+    ax1.axhline(y_low, color="#666", linestyle=":", linewidth=1.2)
+    ax1.axhline(y_med, color="#666", linestyle=":", linewidth=1.2)
+
     ax1.set_xlim(FECHA_INICIO_FIJA, FECHA_FIN_FIJA)
     ax1.set_ylabel("EMERREL (0-1)")
-    ax1.legend(handles=[Patch(facecolor=color_map.get(k, "lightgray"), label=k) for k in ["Bajo","Medio","Alto"]], loc="upper right")
-    ax1.grid(True); st.pyplot(fig1); plt.close(fig1)
+    ax1.legend(handles=[Patch(facecolor=color_map_hex[k], label=k) for k in ["Bajo","Medio","Alto"]],
+               loc="upper right")
+    ax1.grid(True)
+    st.pyplot(fig1); plt.close(fig1)
 
     st.subheader("EMERGENCIA ACUMULADA DIARIA - BORDENAVE (Serie completa 1-feb → 1-oct 2025)")
     fig2, ax2 = plt.subplots(figsize=(12, 5))
@@ -567,8 +634,8 @@ else:
 # ================= Tabla — Serie completa (sin EMERREL/Aplicó regla/Nivel base) =================
 pred_full["Día juliano"] = pred_full["Fecha"].dt.dayofyear
 
-# Mapeo de iconos por nivel final
-MAP_NIVEL_ICONO = {"Bajo": "🟢 Bajo", "Medio": "🟠 Medio", "Alto": "🔴 Alto"}
+# Mapeo de iconos por nivel final (actualizado: 🟢 / 🟡 / 🔴)
+MAP_NIVEL_ICONO = {"Bajo": "🟢 Bajo", "Medio": "🟡 Medio", "Alto": "🔴 Alto"}
 
 tabla_display = pd.DataFrame({
     "Fecha": pred_full["Fecha"],
