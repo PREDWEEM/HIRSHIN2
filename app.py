@@ -366,7 +366,7 @@ if fuente == "API + Histórico":
     df_all["Fecha"] = pd.to_datetime(df_all["Fecha"], errors="coerce")
     df_all = df_all.dropna(subset=["Fecha"]).sort_values("Fecha")
     df_all = df_all.drop_duplicates(subset=["Fecha"], keep="last").reset_index(drop=True)
-    df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear()
+    df_all["Julian_days"] = df_all["Fecha"].dt.dayofyear  # FIX: propiedad, no función
 
     # === Lluvia acumulada 7 días previos (excluye día actual) – calendario ===
     df_prec_lluvia = df_all[["Fecha", "Prec"]].copy()
@@ -634,7 +634,7 @@ else:
 # ================= Tabla — Serie completa (sin EMERREL/Aplicó regla/Nivel base) =================
 pred_full["Día juliano"] = pred_full["Fecha"].dt.dayofyear
 
-# Mapeo de iconos por nivel final (actualizado: 🟢 / 🟡 / 🔴)
+# Mapeo de iconos por nivel final (🟢 / 🟡 / 🔴)
 MAP_NIVEL_ICONO = {"Bajo": "🟢 Bajo", "Medio": "🟡 Medio", "Alto": "🔴 Alto"}
 
 tabla_display = pd.DataFrame({
