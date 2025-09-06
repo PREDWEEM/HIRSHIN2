@@ -452,7 +452,7 @@ except Exception:
 def _nivel_base(v):
     if pd.isna(v):
         return np.nan
-    return "Bajo" if v < 0.2 else ("Medio" if v < 0.4 else "Alto")
+    return "Bajo" if v < 0.1 else ("Medio" if v < 0.3 else "Alto")
 
 pred_full["Nivel_base"] = pred_full["EMERREL (0-1)"].apply(_nivel_base)
 pred_full["gated_down"] = (
